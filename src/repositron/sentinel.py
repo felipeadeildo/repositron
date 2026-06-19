@@ -1,4 +1,5 @@
-"""The partial-update sentinel.
+"""
+The partial-update sentinel.
 
 One canonical singleton, compared by identity. A field equal to `UNSET` on an
 update payload is skipped (left untouched); `None` is a real value (SET NULL).
@@ -8,7 +9,8 @@ from typing import Final
 
 
 class UnsetType:
-    """Type of the `UNSET` sentinel; instances compare equal only by identity.
+    """
+    Type of the `UNSET` sentinel; instances compare equal only by identity.
 
     Annotate an optional update field as `int | UnsetType = UNSET` so it can be
     distinguished from an explicit `None`.

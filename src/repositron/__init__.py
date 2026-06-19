@@ -1,4 +1,5 @@
-"""repositron: a typed, generic SQLAlchemy 2.0 repository base.
+"""
+repositron: a typed, generic SQLAlchemy 2.0 repository base.
 
 Declare a Model (and optionally a DTO and write payloads), inherit one generic
 base, and get a typed repository with filtering, ordering, pagination, column

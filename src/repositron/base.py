@@ -1,4 +1,5 @@
-"""Backend-agnostic repository contracts and the pagination container.
+"""
+Backend-agnostic repository contracts and the pagination container.
 
 These declare what a repository offers, independent of any database. The
 SQLAlchemy implementation that a project actually inherits from lives in
@@ -18,15 +19,7 @@ _list = list  # the list() method below shadows the builtin in class scope
 
 # Equality-filter value: UNSET skips the filter, None filters by IS NULL.
 type FilterValue = (
-    str
-    | int
-    | float
-    | bool
-    | datetime.datetime
-    | datetime.date
-    | Enum
-    | None
-    | UnsetType
+    str | int | float | bool | datetime.datetime | datetime.date | Enum | None | UnsetType
 )
 
 # order_by value: a column, a list of columns, or None for no ordering.
@@ -43,7 +36,8 @@ class PaginatedResult[DTOT]:
 
 
 class ReadOnlyRepositoryABC[ModelT, DTOT = ModelT, IdT = int](ABC):
-    """Read-only side of the repository contract (get, first, list, count, exists).
+    """
+    Read-only side of the repository contract (get, first, list, count, exists).
 
     Backends implement this; consumers inherit the concrete `ReadOnlyRepository`
     from `repositron.sql` instead.

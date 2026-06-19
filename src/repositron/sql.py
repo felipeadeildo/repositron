@@ -1,4 +1,5 @@
-"""Concrete SQLAlchemy repositories: `ReadOnlyRepository` and `Repository`.
+"""
+Concrete SQLAlchemy repositories: `ReadOnlyRepository` and `Repository`.
 
 The working classes a project inherits from. They implement the contracts in
 `repositron.base` over a SQLAlchemy `Session`, adding model-to-DTO hydration,
@@ -31,7 +32,8 @@ _list = list  # avoids shadowing by the list() method in class scope
 class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
     ReadOnlyRepositoryABC[ModelT, DTOT, IdT]
 ):
-    """Typed read access to one table, parameterized by model, DTO, and id type.
+    """
+    Typed read access to one table, parameterized by model, DTO, and id type.
 
     Reads return the DTO `DTOT` (defaults to `ModelT`, i.e. the model itself with
     no hydration). The instance holds no per-call state, so a single repository is
@@ -61,6 +63,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
         Args:
             session: Caller-owned session. The repository never opens, commits, or
                 closes it; writes `flush` only.
+
         """
         self.session = session
         self._active_dto: type | None = None
@@ -68,7 +71,8 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
 
     @classmethod
     def _extract_type_arg(cls, index: int) -> type | None:
-        """Extract a generic type argument from `__orig_bases__`, or None if absent.
+        """
+        Extract a generic type argument from `__orig_bases__`, or None if absent.
 
         Scans for the base parameterized off `ReadOnlyRepository` and
         returns its argument at `index`. Robust to multiple inheritance (mixins
@@ -95,9 +99,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
         """SQLAlchemy model class, inferred from the `ModelT` generic parameter."""
         model = self._extract_type_arg(0)
         if model is None:
-            raise TypeError(
-                f"{type(self).__name__} must be parameterized with a model class."
-            )
+            raise TypeError(f"{type(self).__name__} must be parameterized with a model class.")
         return cast("type[ModelT]", model)
 
     @cached_property
@@ -112,7 +114,8 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
         return self._active_dto if self._active_dto is not None else self.dto_class
 
     def __getitem__[S](self, dto: type[S]) -> "ReadOnlyRepository[ModelT, S, IdT]":
-        """Return a lightweight clone bound to `dto` for this call.
+        """
+        Return a lightweight clone bound to `dto` for this call.
 
         The clone shares this repository's session and diverges only in its active
         DTO, so the injected instance stays untouched and thread-safe. A narrow
@@ -120,6 +123,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
 
         Example:
             repo[TargetIdOrg].list(is_active=True)  # SELECT id, organization_id
+
         """
         clone = copy.copy(self)
         clone._active_dto = dto
@@ -130,9 +134,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
         """The primary-key column element, configurable via `pk_column`."""
         col = getattr(self.model_class, self.pk_column, None)
         if col is None:
-            raise AttributeError(
-                f"{self.model_class.__name__} has no column '{self.pk_column}'"
-            )
+            raise AttributeError(f"{self.model_class.__name__} has no column '{self.pk_column}'")
         return col  # type: ignore[return-value]
 
     def _project_columns(self, dto: type) -> _list[ColumnElement]:
@@ -170,7 +172,8 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
         )
 
     def _hydrate(self, model: ModelT) -> DTOT:
-        """Convert a model instance to the active DTO.
+        """
+        Convert a model instance to the active DTO.
 
         When the DTO is the model class the instance is returned unchanged. A
         Pydantic DTO goes through `model_validate`, a dataclass DTO is built by
@@ -188,9 +191,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
             if validate is not None:
                 return cast("DTOT", validate(model))
 
-            model_dict = {
-                k: v for k, v in model.__dict__.items() if not k.startswith("_")
-            }
+            model_dict = {k: v for k, v in model.__dict__.items() if not k.startswith("_")}
             if is_dataclass(dto):
                 reverse = {v: k for k, v in self.field_mapping.items()}
                 kwargs = {
@@ -213,18 +214,18 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
         extra_filters: _list[ColumnElement[bool]] | None = None,
         **filters: FilterValue,
     ) -> Query:
-        """Apply equality `**filters` and arbitrary `extra_filters` (see class docstring).
+        """
+        Apply equality `**filters` and arbitrary `extra_filters` (see class docstring).
 
         Raises:
             ValueError: if a `**filters` key is not a model attribute.
+
         """
         for key, value in filters.items():
             if isinstance(value, UnsetType):
                 continue
             if not hasattr(self.model_class, key):
-                raise ValueError(
-                    f"{self.model_class.__name__} has no attribute '{key}'"
-                )
+                raise ValueError(f"{self.model_class.__name__} has no attribute '{key}'")
             query = query.filter(getattr(self.model_class, key) == value)
         if extra_filters:
             query = query.filter(*extra_filters)
@@ -246,11 +247,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
         **filters: FilterValue,
     ) -> Query:
         """Build a query (over `columns`, or the whole model if none) with filters and order applied."""  # noqa: E501
-        target = (
-            self.session.query(*columns)
-            if columns
-            else self.session.query(self.model_class)
-        )
+        target = self.session.query(*columns) if columns else self.session.query(self.model_class)
         target = self._apply_filters(target, extra_filters=extra_filters, **filters)
         return self._apply_order(target, order_by=order_by)
 
@@ -282,9 +279,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
                 dto, extra_filters=extra_filters, order_by=order_by, **filters
             ).first()
             return cast("DTOT", dto(*row)) if row is not None else None
-        model = self._select(
-            extra_filters=extra_filters, order_by=order_by, **filters
-        ).first()
+        model = self._select(extra_filters=extra_filters, order_by=order_by, **filters).first()
         if model is None:
             return None
         return self._hydrate(model)
@@ -304,9 +299,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
             ).all()
             # Rows come back in the DTO's field order (see _project_columns); build positionally.
             return cast("_list[DTOT]", [dto(*row) for row in rows])
-        models = self._select(
-            extra_filters=extra_filters, order_by=order_by, **filters
-        ).all()
+        models = self._select(extra_filters=extra_filters, order_by=order_by, **filters).all()
         return [self._hydrate(m) for m in models]
 
     def list_paginated(
@@ -318,7 +311,8 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
         order_by: OrderBy = None,
         **filters: FilterValue,
     ) -> PaginatedResult[DTOT]:
-        """Return a page of records plus the unpaginated total.
+        """
+        Return a page of records plus the unpaginated total.
 
         Args:
             order_by: Required. Pagination over an unstable order silently drops
@@ -326,6 +320,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
 
         Raises:
             ValueError: If `order_by` is None.
+
         """
         if order_by is None:
             raise ValueError(
@@ -333,9 +328,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
             )
         dto = self._projecting()
         if dto is not None:
-            query = self._project(
-                dto, extra_filters=extra_filters, order_by=order_by, **filters
-            )
+            query = self._project(dto, extra_filters=extra_filters, order_by=order_by, **filters)
             total = query.order_by(None).count()
             rows = query.offset(offset).limit(limit).all()
             items = cast("_list[DTOT]", [dto(*row) for row in rows])
@@ -358,17 +351,15 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
 
     def exists(self, id: IdT) -> bool:
         """Check whether a record with this primary key exists."""
-        return (
-            self.session.query(self._pk_col).filter(self._pk_col == id).first()
-            is not None
-        )
+        return self.session.query(self._pk_col).filter(self._pk_col == id).first() is not None
 
 
 class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, IdT = int](
     ReadOnlyRepository[ModelT, DTOT, IdT],
     CRUDRepositoryABC[ModelT, DTOT, CreateT, UpdateT, IdT],
 ):
-    """Read access plus `create`/`update`/`delete` from dataclass payloads.
+    """
+    Read access plus `create`/`update`/`delete` from dataclass payloads.
 
     Writes `flush` so the caller still owns the transaction boundary (no
     `commit`). `CreateT`/`UpdateT` are the payload dataclasses; `UNSET` fields are
@@ -379,15 +370,18 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, IdT 
             Repository[Target, TargetDTO, TargetCreate, TargetUpdate]
         ):
             field_mapping = {"mention_rank": "rank"}
+
     """
 
     def create(self, payload: CreateT) -> IdT:
-        """Insert a record from a dataclass payload and flush.
+        """
+        Insert a record from a dataclass payload and flush.
 
         UNSET fields are omitted, so the column or model default applies.
 
         Returns:
             The new primary-key value, read back after the flush.
+
         """
         kwargs = {
             f.name: getattr(payload, f.name)
@@ -401,13 +395,15 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, IdT 
         return getattr(model, self.pk_column)
 
     def update(self, id: IdT, payload: UpdateT) -> bool:
-        """Apply a partial update from a dataclass payload and flush.
+        """
+        Apply a partial update from a dataclass payload and flush.
 
         UNSET fields are left untouched; `None` is written as a real value
         (SET NULL).
 
         Returns:
             True on success, False if no record has that primary key.
+
         """
         model = self.session.query(self.model_class).filter(self._pk_col == id).first()
         if model is None:
@@ -420,10 +416,12 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, IdT 
         return True
 
     def delete(self, id: IdT) -> bool:
-        """Delete a record by primary key and flush.
+        """
+        Delete a record by primary key and flush.
 
         Returns:
             True on success, False if no record has that primary key.
+
         """
         model = self.session.query(self.model_class).filter(self._pk_col == id).first()
         if model is None:
