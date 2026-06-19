@@ -12,11 +12,15 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 
+from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 
 from repositron.sentinel import UnsetType
 
 _list = list  # the list() method below shadows the builtin in class scope
+
+type OrderColumn = ColumnElement | InstrumentedAttribute
+"""A single ordering term: a model attribute (`User.id`) or an expression (`User.id.desc()`)."""
 
 type PrimaryKey = int | str | uuid.UUID
 """A primary-key value: the type every `id` argument accepts."""
@@ -26,7 +30,7 @@ type FilterValue = (
 )
 """The value of an equality filter. `UNSET` skips the filter; `None` filters by `IS NULL`."""
 
-type OrderBy = ColumnElement | _list[ColumnElement] | None
+type OrderBy = OrderColumn | _list[OrderColumn] | None
 """An ordering: one column, a list of columns, or `None` for no ordering."""
 
 
