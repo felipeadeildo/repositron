@@ -6,15 +6,15 @@ optionally a DTO and write payloads), inherit one generic class, and get
 `update` / `delete` with no per-table boilerplate.
 
 Every method is fully typed off the generic parameters, so your editor knows
-that `repo.list()` returns `list[TargetDTO]` and `repo.get(id)` takes an `int`
+that `repo.list()` returns `list[UserDTO]` and `repo.get(id)` takes an `int`
 (or a `uuid.UUID`, your choice).
 
 ```python
-class TargetRepository(Repository[Target, TargetDTO, TargetCreate, TargetUpdate]):
-    field_mapping = {"mention_rank": "rank"}
+class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
+    field_mapping = {"full_name": "name"}
 
-repo.list(is_active=True, order_by=Target.created_at.desc())  # -> list[TargetDTO]
-repo.update(1, TargetUpdate(name="Ale"))                      # only name; rank untouched
+repo.list(is_active=True, order_by=User.created_at.desc())  # -> list[UserDTO]
+repo.update(1, UserUpdate(name="Ada"))                      # only name; others untouched
 ```
 
 ## Install
@@ -36,51 +36,51 @@ mechanical and easy to get subtly wrong.
 ### Before: hand-written, per table
 
 ```python
-class TargetRepository:
+class UserRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def get(self, id: int) -> TargetDTO | None:
-        row = self.session.query(Target).filter(Target.id == id).first()
+    def get(self, id: int) -> UserDTO | None:
+        row = self.session.query(User).filter(User.id == id).first()
         if row is None:
             return None
-        return TargetDTO(id=row.id, name=row.name, rank=row.mention_rank)
+        return UserDTO(id=row.id, name=row.full_name, email=row.email)
 
-    def list(self, *, is_active: bool | None = None) -> list[TargetDTO]:
-        query = self.session.query(Target)
+    def list(self, *, is_active: bool | None = None) -> list[UserDTO]:
+        query = self.session.query(User)
         if is_active is not None:
-            query = query.filter(Target.is_active == is_active)
+            query = query.filter(User.is_active == is_active)
         return [
-            TargetDTO(id=r.id, name=r.name, rank=r.mention_rank)
-            for r in query.order_by(Target.created_at.desc()).all()
+            UserDTO(id=r.id, name=r.full_name, email=r.email)
+            for r in query.order_by(User.created_at.desc()).all()
         ]
 
-    def list_paginated(self, offset: int, limit: int = 20) -> tuple[list[TargetDTO], int]:
-        query = self.session.query(Target).order_by(Target.created_at.desc())
+    def list_paginated(self, offset: int, limit: int = 20) -> tuple[list[UserDTO], int]:
+        query = self.session.query(User).order_by(User.created_at.desc())
         total = query.order_by(None).count()
         rows = query.offset(offset).limit(limit).all()
-        return [TargetDTO(id=r.id, name=r.name, rank=r.mention_rank) for r in rows], total
+        return [UserDTO(id=r.id, name=r.full_name, email=r.email) for r in rows], total
 
     def count(self, *, is_active: bool | None = None) -> int:
-        query = self.session.query(Target.id)
+        query = self.session.query(User.id)
         if is_active is not None:
-            query = query.filter(Target.is_active == is_active)
+            query = query.filter(User.is_active == is_active)
         return query.count()
 
-    def create(self, name: str, mention_rank: int) -> int:
-        target = Target(name=name, mention_rank=mention_rank)
-        self.session.add(target)
+    def create(self, full_name: str, email: str) -> int:
+        user = User(full_name=full_name, email=email)
+        self.session.add(user)
         self.session.flush()
-        return target.id
+        return user.id
 
-    def update(self, id: int, *, name: str | None = None, mention_rank: int | None = None) -> bool:
-        target = self.session.query(Target).filter(Target.id == id).first()
-        if target is None:
+    def update(self, id: int, *, full_name: str | None = None, email: str | None = None) -> bool:
+        user = self.session.query(User).filter(User.id == id).first()
+        if user is None:
             return False
-        if name is not None:          # but how do you set a column to NULL on purpose?
-            target.name = name
-        if mention_rank is not None:
-            target.mention_rank = mention_rank
+        if full_name is not None:     # but how do you set a column to NULL on purpose?
+            user.full_name = full_name
+        if email is not None:
+            user.email = email
         self.session.flush()
         return True
 
@@ -95,40 +95,40 @@ from repositron import Repository, UNSET, UnsetType
 
 
 @dataclass(frozen=True, slots=True)
-class TargetDTO:               # light, detached, serializes straight to JSON
+class UserDTO:                 # light, detached, serializes straight to JSON
     id: int
-    name: str
-    rank: int                  # renamed from the model column `mention_rank`
+    name: str                  # renamed from the model column `full_name`
+    email: str
 
 
 @dataclass
-class TargetCreate:
-    name: str
-    mention_rank: int
+class UserCreate:
+    full_name: str
+    email: str
 
 
 @dataclass
-class TargetUpdate:
-    name: str | UnsetType = UNSET          # absent = leave alone; None = SET NULL
-    mention_rank: int | UnsetType = UNSET
+class UserUpdate:
+    full_name: str | UnsetType = UNSET     # absent = leave alone; None = SET NULL
+    email: str | UnsetType = UNSET
 
 
-class TargetRepository(Repository[Target, TargetDTO, TargetCreate, TargetUpdate]):
-    field_mapping = {"mention_rank": "rank"}
+class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
+    field_mapping = {"full_name": "name"}
 ```
 
 That is the whole repository. Every method above comes for free, typed against
-`TargetDTO`:
+`UserDTO`:
 
 ```python
-repo = TargetRepository(session)
+repo = UserRepository(session)
 
-repo.get(1)                                          # -> TargetDTO | None
-repo.list(is_active=True, order_by=Target.created_at.desc())
-repo.list_paginated(0, 20, order_by=Target.created_at.desc())  # -> PaginatedResult[TargetDTO]
+repo.get(1)                                          # -> UserDTO | None
+repo.list(is_active=True, order_by=User.created_at.desc())
+repo.list_paginated(0, 20, order_by=User.created_at.desc())  # -> PaginatedResult[UserDTO]
 repo.count(is_active=True)
-repo.create(TargetCreate(name="Ale", mention_rank=3))          # -> int (new id)
-repo.update(1, TargetUpdate(name="Ale"))                       # rank left untouched
+repo.create(UserCreate(full_name="Ada Lovelace", email="ada@example.com"))  # -> int (new id)
+repo.update(1, UserUpdate(full_name="Ada L."))       # email left untouched
 repo.delete(1)
 ```
 
@@ -141,11 +141,11 @@ expression. They combine.
 
 ```python
 repo.list(
-    name="Ale",                          # equality
-    extra_filters=[Target.age > 18],     # any expression: >, IN, LIKE, OR, ...
-    order_by=[Target.created_at.desc(), Target.id],
+    is_active=True,                      # equality
+    extra_filters=[User.age > 18],       # any expression: >, IN, LIKE, OR, ...
+    order_by=[User.created_at.desc(), User.id],
 )
-# WHERE name = 'Ale' AND age > 18 ORDER BY created_at DESC, id
+# WHERE is_active = true AND age > 18 ORDER BY created_at DESC, id
 ```
 
 A filter value of `None` means `IS NULL`; `UNSET` skips the filter entirely, so
@@ -158,8 +158,8 @@ column"; `None` says "set it to NULL". The hand-written `if x is not None`
 pattern can't express the second one.
 
 ```python
-repo.update(1, TargetUpdate(name="Ale"))         # rank stays whatever it was
-repo.update(1, TargetUpdate(mention_rank=None))  # rank IS NULL now
+repo.update(1, UserUpdate(full_name="Ada"))     # email stays whatever it was
+repo.update(1, UserUpdate(email=None))          # email IS NULL now
 ```
 
 ### Column projection: load only what you need
@@ -169,12 +169,12 @@ that shape, for the duration of the call. The injected repository is untouched.
 
 ```python
 @dataclass(frozen=True, slots=True)
-class TargetIdOrg:
+class UserIdEmail:
     id: int
-    organization_id: int
+    email: str
 
-repo[TargetIdOrg].list(is_active=True)   # SELECT id, organization_id -> list[TargetIdOrg]
-repo[TargetIdOrg].first(id=5)
+repo[UserIdEmail].list(is_active=True)   # SELECT id, email -> list[UserIdEmail]
+repo[UserIdEmail].first(id=5)
 ```
 
 ### Pagination is ordered, or it raises
@@ -185,7 +185,7 @@ heisenbug in production.
 
 ```python
 repo.list_paginated(0, 20)                                 # ValueError
-repo.list_paginated(0, 20, order_by=Target.id)             # PaginatedResult(items=[...], total=...)
+repo.list_paginated(0, 20, order_by=User.id)               # PaginatedResult(items=[...], total=...)
 ```
 
 ## Three shapes of DTO
@@ -200,9 +200,9 @@ same object is your repository return value and your `response_model`. No third
 hand-written schema.
 
 ```python
-@app.get("/targets", response_model=list[TargetDTO])
-def list_targets(repo: TargetRepository = Depends(get_repo)):
-    return repo.list(order_by=Target.created_at.desc())
+@app.get("/users", response_model=list[UserDTO])
+def list_users(repo: UserRepository = Depends(get_repo)):
+    return repo.list(order_by=User.created_at.desc())
 ```
 
 ### 2. No DTO at all (model as DTO)
@@ -214,11 +214,11 @@ hydration, no dict round-trip. Set the id type when your keys aren't `int`:
 import uuid
 from repositron import Repository
 
-class SiteRepository(Repository[Site, Site, SiteCreate, SiteUpdate, uuid.UUID]):
+class AccountRepository(Repository[Account, Account, AccountCreate, AccountUpdate, uuid.UUID]):
     pass
 
-repo.get(uuid.uuid4())        # -> Site | None, typed on UUID
-repo.list(status="active")    # -> list[Site]
+repo.get(uuid.uuid4())        # -> Account | None, typed on UUID
+repo.list(status="active")    # -> list[Account]
 ```
 
 ### 3. Pydantic DTO
@@ -227,13 +227,13 @@ If you already have a Pydantic response schema, it is the DTO. repositron
 detects Pydantic and hydrates through `model_validate`.
 
 ```python
-class TargetOut(BaseModel):
+class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     name: str
 
-class TargetRepository(Repository[Target, TargetOut]): ...
-repo.list()   # -> list[TargetOut], ready for HTTP
+class UserRepository(Repository[User, UserOut]): ...
+repo.list()   # -> list[UserOut], ready for HTTP
 ```
 
 ## Public API
@@ -249,13 +249,13 @@ from repositron import (
 
 Type parameters: `Repository[ModelT, DTOT=ModelT, CreateT, UpdateT, IdT=int]`.
 `ModelT` is required; everything else has a default, so
-`Repository[Site]` is a valid read/write repository returning `Site` on `int`
-keys.
+`Repository[Account]` is a valid read/write repository returning `Account` on
+`int` keys.
 
-| Class attribute | Purpose | Default |
-|---|---|---|
-| `field_mapping` | `{model_field: dto_field}` for renamed fields | `{}` |
-| `pk_column` | primary-key column name | `"id"` |
+| Class attribute | Purpose                                       | Default |
+| --------------- | --------------------------------------------- | ------- |
+| `field_mapping` | `{model_field: dto_field}` for renamed fields | `{}`    |
+| `pk_column`     | primary-key column name                       | `"id"`  |
 
 ## Design notes
 
