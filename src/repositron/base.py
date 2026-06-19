@@ -26,7 +26,16 @@ type PrimaryKey = int | str | uuid.UUID
 """A primary-key value: the type every `id` argument accepts."""
 
 type FilterValue = (
-    str | int | float | bool | datetime.datetime | datetime.date | Enum | None | UnsetType
+    str
+    | int
+    | float
+    | bool
+    | uuid.UUID
+    | datetime.datetime
+    | datetime.date
+    | Enum
+    | None
+    | UnsetType
 )
 """The value of an equality filter. `UNSET` skips the filter; `None` filters by `IS NULL`."""
 
