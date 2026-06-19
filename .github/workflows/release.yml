@@ -1,54 +1,34 @@
-name: Release
+name: Publish to PyPI
 
 on:
-  workflow_dispatch:
-    inputs:
-      bump:
-        description: Version bump
-        type: choice
-        required: true
-        default: patch
-        options: [patch, minor, major]
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub release
+  id-token: write # trusted publishing (OIDC) — no PyPI token needed
 
 jobs:
-  release:
+  build-and-publish:
+    name: Build and publish to PyPI
     runs-on: ubuntu-latest
     environment: pypi
-    permissions:
-      id-token: write   # trusted publishing (OIDC) — no PyPI token needed
-      contents: write   # commit the bump, push the tag, create the release
+
     steps:
       - uses: actions/checkout@v6
 
       - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          version: "0.11.22"
+        uses: astral-sh/setup-uv@v8
 
-      - name: Bump version
-        id: bump
-        run: |
-          uv version --bump "${{ inputs.bump }}"
-          echo "version=$(uv version --short)" >> "$GITHUB_OUTPUT"
-
-      - name: Commit and tag
-        env:
-          VERSION: ${{ steps.bump.outputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -am "release: v$VERSION"
-          git tag "v$VERSION"
-          git push origin HEAD --tags
-
-      - name: Build
+      - name: Build package
         run: uv build
 
       - name: Publish to PyPI
         run: uv publish
 
       - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.bump.outputs.version }}
-        run: gh release create "v$VERSION" --generate-notes --title "v$VERSION" dist/*
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
