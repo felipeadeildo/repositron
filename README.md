@@ -1,13 +1,39 @@
-# repositron
+<h1 align="center">repositron</h1>
 
-A typed, generic repository base for SQLAlchemy 2.0. Declare a model (and
-optionally a DTO and write payloads), inherit one generic class, and get
-`get` / `first` / `list` / `list_paginated` / `count` / `exists` / `create` /
-`update` / `delete` with no per-table boilerplate.
+<p align="center">
+    <em>A typed, generic repository base for SQLAlchemy 2.0. Full CRUD, zero per-table boilerplate.</em>
+</p>
+
+<p align="center">
+<a href="https://github.com/felipeadeildo/repositron/actions/workflows/release.yml">
+    <img src="https://github.com/felipeadeildo/repositron/actions/workflows/release.yml/badge.svg" alt="Release">
+</a>
+<a href="https://pypi.org/project/repositron">
+    <img src="https://img.shields.io/pypi/v/repositron?color=%2334D058&label=pypi" alt="Package version">
+</a>
+<a href="https://pypi.org/project/repositron">
+    <img src="https://img.shields.io/pypi/pyversions/repositron.svg?color=%2334D058" alt="Supported Python versions">
+</a>
+<a href="https://github.com/felipeadeildo/repositron/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License">
+</a>
+</p>
+
+---
+
+**Documentation**: [https://repositron.fa.dev.br](https://repositron.fa.dev.br)
+
+**Source Code**: [https://github.com/felipeadeildo/repositron](https://github.com/felipeadeildo/repositron)
+
+---
+
+Declare a model (and optionally a DTO and write payloads), inherit one generic
+class, and get `get` / `first` / `list` / `list_paginated` / `count` / `exists`
+/ `create` / `update` / `delete` with no per-table boilerplate.
 
 Every method is fully typed off the generic parameters, so your editor knows
-that `repo.list()` returns `list[UserDTO]` and `repo.get(id)` takes an `int`
-(or a `uuid.UUID`, your choice).
+that `repo.list()` returns `list[UserDTO]`. Primary keys can be `int`, `str`, or
+`uuid.UUID` — `repo.get(id)` takes any of them.
 
 ```python
 class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
@@ -208,16 +234,17 @@ def list_users(repo: Annotated[UserRepository, Depends(get_repo)]) -> list[UserD
 ### 2. No DTO at all (model as DTO)
 
 Leave the DTO parameter off and the repository returns the model itself. No
-hydration, no dict round-trip. Set the id type when your keys aren't `int`:
+hydration, no dict round-trip. Works the same whatever the key type — here the
+table is keyed by `uuid.UUID`:
 
 ```python
 import uuid
 from repositron import Repository
 
-class AccountRepository(Repository[Account, Account, AccountCreate, AccountUpdate, uuid.UUID]):
+class AccountRepository(Repository[Account, Account, AccountCreate, AccountUpdate]):
     pass
 
-repo.get(uuid.uuid4())        # -> Account | None, typed on UUID
+repo.get(uuid.uuid4())        # -> Account | None
 repo.list(status="active")    # -> list[Account]
 ```
 
@@ -243,14 +270,16 @@ from repositron import (
     Repository,            # full CRUD generic base
     ReadOnlyRepository,    # read-only generic base
     PaginatedResult,       # {items, total} container
+    PrimaryKey,            # primary-key value type: int | str | uuid.UUID
+    OrderBy,               # order_by argument type
     UNSET, UnsetType,      # partial-update sentinel
 )
 ```
 
-Type parameters: `Repository[ModelT, DTOT=ModelT, CreateT, UpdateT, IdT=int]`.
-`ModelT` is required; everything else has a default, so
-`Repository[Account]` is a valid read/write repository returning `Account` on
-`int` keys.
+Type parameters: `Repository[ModelT, DTOT=ModelT, CreateT, UpdateT]`.
+`ModelT` is required; everything else has a default, so `Repository[Account]`
+is a valid read/write repository returning `Account`. Primary keys are
+`PrimaryKey` (`int | str | uuid.UUID`).
 
 | Class attribute | Purpose                                       | Default |
 | --------------- | --------------------------------------------- | ------- |
