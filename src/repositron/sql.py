@@ -1,0 +1,433 @@
+"""Concrete SQLAlchemy repositories: `ReadOnlyRepository` and `Repository`.
+
+The working classes a project inherits from. They implement the contracts in
+`repositron.base` over a SQLAlchemy `Session`, adding model-to-DTO hydration,
+column projection via `repo[DTO]`, and the equality/expression filter split.
+"""
+
+import copy
+from dataclasses import fields, is_dataclass
+from functools import cached_property
+from typing import TYPE_CHECKING, ClassVar, cast, get_args, get_origin
+
+from sqlalchemy.orm import Query, Session
+from sqlalchemy.sql.elements import ColumnElement
+
+from repositron.base import (
+    CRUDRepositoryABC,
+    FilterValue,
+    OrderBy,
+    PaginatedResult,
+    ReadOnlyRepositoryABC,
+)
+from repositron.sentinel import UnsetType
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+
+_list = list  # avoids shadowing by the list() method in class scope
+
+
+class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
+    ReadOnlyRepositoryABC[ModelT, DTOT, IdT]
+):
+    """Typed read access to one table, parameterized by model, DTO, and id type.
+
+    Reads return the DTO `DTOT` (defaults to `ModelT`, i.e. the model itself with
+    no hydration). The instance holds no per-call state, so a single repository is
+    safe to share and inject.
+
+    Two filtering mechanisms combine in one call:
+
+    - `**filters`: equality only (`column == value`), keyed by model attribute
+      name, e.g. `name="Ale"`. `UNSET` skips that filter; `None` filters by
+      `IS NULL`.
+    - `extra_filters`: arbitrary SQLAlchemy expressions for what equality can't
+      express, like `age > 18`, `IN`, `LIKE`, `OR`. So
+      `list(name="Ale", extra_filters=[Model.age > 18])` is
+      `WHERE name = 'Ale' AND age > 18`.
+
+    The return type is resolved `repo[X]` (call site) > `DTOT` (class default) >
+    `ModelT` (fallback); see `__getitem__`.
+    """
+
+    field_mapping: ClassVar[dict[str, str]] = {}
+    """Renamed fields as `{model_field: dto_field}`, applied both when hydrating and when resolving projection columns."""  # noqa: E501
+    pk_column: ClassVar[str] = "id"
+    """Primary-key column name; override for models keyed elsewhere (e.g. `"url_hash"`)."""
+
+    def __init__(self, session: Session) -> None:
+        """
+        Args:
+            session: Caller-owned session. The repository never opens, commits, or
+                closes it; writes `flush` only.
+        """
+        self.session = session
+        self._active_dto: type | None = None
+        """DTO bound via `__getitem__` (call-site override); None uses the class default."""
+
+    @classmethod
+    def _extract_type_arg(cls, index: int) -> type | None:
+        """Extract a generic type argument from `__orig_bases__`, or None if absent.
+
+        Scans for the base parameterized off `ReadOnlyRepository` and
+        returns its argument at `index`. Robust to multiple inheritance (mixins
+        are skipped) and to base position in the MRO. Returns None when the
+        argument was omitted (e.g. DTOT left to its default) so callers can fall
+        back rather than crash.
+        """
+        for base in getattr(cls, "__orig_bases__", ()):
+            origin = get_origin(base) or base
+            if isinstance(origin, type) and issubclass(origin, ReadOnlyRepository):
+                args = get_args(base)
+                if len(args) > index:
+                    arg = args[index]
+                    # A still-unbound TypeVar (default not supplied) is not a real type.
+                    return arg if isinstance(arg, type) else None
+                return None
+        raise TypeError(
+            f"Cannot infer type arguments for {cls.__name__}. Inherit passing the generic "
+            f"parameters, e.g. class MyRepo(Repository[Model, DTO, Create, Update])."
+        )
+
+    @cached_property
+    def model_class(self) -> type[ModelT]:
+        """SQLAlchemy model class, inferred from the `ModelT` generic parameter."""
+        model = self._extract_type_arg(0)
+        if model is None:
+            raise TypeError(
+                f"{type(self).__name__} must be parameterized with a model class."
+            )
+        return cast("type[ModelT]", model)
+
+    @cached_property
+    def dto_class(self) -> type[DTOT]:
+        """DTO class: the `DTOT` generic if supplied, else `ModelT` (model-as-DTO)."""
+        dto = self._extract_type_arg(1)
+        return cast("type[DTOT]", dto if dto is not None else self.model_class)
+
+    @property
+    def _dto(self) -> type:
+        """Active DTO: the call-site override (`repo[X]`) if set, else the class default."""
+        return self._active_dto if self._active_dto is not None else self.dto_class
+
+    def __getitem__[S](self, dto: type[S]) -> "ReadOnlyRepository[ModelT, S, IdT]":
+        """Return a lightweight clone bound to `dto` for this call.
+
+        The clone shares this repository's session and diverges only in its active
+        DTO, so the injected instance stays untouched and thread-safe. A narrow
+        dataclass DTO triggers column projection (loads only its fields).
+
+        Example:
+            repo[TargetIdOrg].list(is_active=True)  # SELECT id, organization_id
+        """
+        clone = copy.copy(self)
+        clone._active_dto = dto
+        return cast("ReadOnlyRepository[ModelT, S, IdT]", clone)
+
+    @property
+    def _pk_col(self) -> ColumnElement:
+        """The primary-key column element, configurable via `pk_column`."""
+        col = getattr(self.model_class, self.pk_column, None)
+        if col is None:
+            raise AttributeError(
+                f"{self.model_class.__name__} has no column '{self.pk_column}'"
+            )
+        return col  # type: ignore[return-value]
+
+    def _project_columns(self, dto: type) -> _list[ColumnElement]:
+        """Resolve a dataclass DTO's fields to model columns (in field order), honoring field_mapping."""  # noqa: E501
+        reverse = {v: k for k, v in self.field_mapping.items()}
+        names = [f.name for f in fields(cast("type[DataclassInstance]", dto))]
+        if not names:
+            raise ValueError(f"DTO {dto.__name__} has no fields")
+        columns: _list[ColumnElement] = []
+        for name in names:
+            model_field = reverse.get(name, name)
+            col = getattr(self.model_class, model_field, None)
+            if col is None:
+                raise AttributeError(
+                    f"DTO {dto.__name__}: field '{name}' maps to no column on "
+                    f"{self.model_class.__name__} (model_field='{model_field}')"
+                )
+            columns.append(col)
+        return columns
+
+    def _project(
+        self,
+        dto: type,
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None,
+        order_by: OrderBy,
+        **filters: FilterValue,
+    ) -> Query:
+        """Build the column-projection query for a dataclass `dto` (rows in field order)."""
+        return self._select(
+            *self._project_columns(dto),
+            extra_filters=extra_filters,
+            order_by=order_by,
+            **filters,
+        )
+
+    def _hydrate(self, model: ModelT) -> DTOT:
+        """Convert a model instance to the active DTO.
+
+        When the DTO is the model class the instance is returned unchanged. A
+        Pydantic DTO goes through `model_validate`, a dataclass DTO is built by
+        field name; both honor `field_mapping` for renames. Override for a DTO
+        the automatic path can't construct.
+        """
+        dto = self._dto
+        if dto is self.model_class:
+            return cast("DTOT", model)
+
+        try:
+            # ponytail: duck-type on model_validate instead of importing pydantic, so it
+            # stays a genuinely optional extra. from_attributes reads off the model; aliases rename.
+            validate = getattr(dto, "model_validate", None)
+            if validate is not None:
+                return cast("DTOT", validate(model))
+
+            model_dict = {
+                k: v for k, v in model.__dict__.items() if not k.startswith("_")
+            }
+            if is_dataclass(dto):
+                reverse = {v: k for k, v in self.field_mapping.items()}
+                kwargs = {
+                    f.name: model_dict[reverse.get(f.name, f.name)]
+                    for f in fields(dto)
+                    if reverse.get(f.name, f.name) in model_dict
+                }
+                return cast("DTOT", dto(**kwargs))
+            return cast("DTOT", dto(**model_dict))
+        except (AttributeError, TypeError, IndexError) as e:
+            raise NotImplementedError(
+                f"Cannot automatically convert {type(model).__name__} to {dto.__name__}. "
+                f"Override _hydrate() in your repository subclass. Error: {e}"
+            ) from e
+
+    def _apply_filters(
+        self,
+        query: Query,
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None = None,
+        **filters: FilterValue,
+    ) -> Query:
+        """Apply equality `**filters` and arbitrary `extra_filters` (see class docstring).
+
+        Raises:
+            ValueError: if a `**filters` key is not a model attribute.
+        """
+        for key, value in filters.items():
+            if isinstance(value, UnsetType):
+                continue
+            if not hasattr(self.model_class, key):
+                raise ValueError(
+                    f"{self.model_class.__name__} has no attribute '{key}'"
+                )
+            query = query.filter(getattr(self.model_class, key) == value)
+        if extra_filters:
+            query = query.filter(*extra_filters)
+        return query
+
+    def _apply_order(self, query: Query, order_by: OrderBy = None) -> Query:
+        """Apply `order_by` to a query; `None` leaves it unordered."""
+        if order_by is None:
+            return query
+        if isinstance(order_by, list):
+            return query.order_by(*order_by)
+        return query.order_by(order_by)
+
+    def _select(
+        self,
+        *columns: ColumnElement,
+        extra_filters: _list[ColumnElement[bool]] | None = None,
+        order_by: OrderBy = None,
+        **filters: FilterValue,
+    ) -> Query:
+        """Build a query (over `columns`, or the whole model if none) with filters and order applied."""  # noqa: E501
+        target = (
+            self.session.query(*columns)
+            if columns
+            else self.session.query(self.model_class)
+        )
+        target = self._apply_filters(target, extra_filters=extra_filters, **filters)
+        return self._apply_order(target, order_by=order_by)
+
+    def _projecting(self) -> type | None:
+        """The active DTO if it warrants column projection (a non-model dataclass), else None."""
+        dto = self._dto
+        if dto is self.model_class:
+            return None
+        return dto if is_dataclass(dto) else None
+
+    def get(self, id: IdT) -> DTOT | None:
+        """Fetch one record by primary key, hydrated to the active DTO."""
+        model = self.session.query(self.model_class).filter(self._pk_col == id).first()
+        if model is None:
+            return None
+        return self._hydrate(model)
+
+    def first(
+        self,
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None = None,
+        order_by: OrderBy = None,
+        **filters: FilterValue,
+    ) -> DTOT | None:
+        """Fetch the first matching record, hydrated to the active DTO, or None."""
+        dto = self._projecting()
+        if dto is not None:
+            row = self._project(
+                dto, extra_filters=extra_filters, order_by=order_by, **filters
+            ).first()
+            return cast("DTOT", dto(*row)) if row is not None else None
+        model = self._select(
+            extra_filters=extra_filters, order_by=order_by, **filters
+        ).first()
+        if model is None:
+            return None
+        return self._hydrate(model)
+
+    def list(
+        self,
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None = None,
+        order_by: OrderBy = None,
+        **filters: FilterValue,
+    ) -> _list[DTOT]:
+        """List records matching the filters, each hydrated to the active DTO."""
+        dto = self._projecting()
+        if dto is not None:
+            rows = self._project(
+                dto, extra_filters=extra_filters, order_by=order_by, **filters
+            ).all()
+            # Rows come back in the DTO's field order (see _project_columns); build positionally.
+            return cast("_list[DTOT]", [dto(*row) for row in rows])
+        models = self._select(
+            extra_filters=extra_filters, order_by=order_by, **filters
+        ).all()
+        return [self._hydrate(m) for m in models]
+
+    def list_paginated(
+        self,
+        offset: int,
+        limit: int = 20,
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None = None,
+        order_by: OrderBy = None,
+        **filters: FilterValue,
+    ) -> PaginatedResult[DTOT]:
+        """Return a page of records plus the unpaginated total.
+
+        Args:
+            order_by: Required. Pagination over an unstable order silently drops
+                and repeats rows across pages, so a None order is rejected.
+
+        Raises:
+            ValueError: If `order_by` is None.
+        """
+        if order_by is None:
+            raise ValueError(
+                "list_paginated requires order_by: pagination is unstable without a stable order"
+            )
+        dto = self._projecting()
+        if dto is not None:
+            query = self._project(
+                dto, extra_filters=extra_filters, order_by=order_by, **filters
+            )
+            total = query.order_by(None).count()
+            rows = query.offset(offset).limit(limit).all()
+            items = cast("_list[DTOT]", [dto(*row) for row in rows])
+            return PaginatedResult(items=items, total=total)
+        query = self._select(extra_filters=extra_filters, order_by=order_by, **filters)
+        total = query.order_by(None).count()
+        models = query.offset(offset).limit(limit).all()
+        return PaginatedResult(items=[self._hydrate(m) for m in models], total=total)
+
+    def count(
+        self,
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None = None,
+        **filters: FilterValue,
+    ) -> int:
+        """Count records matching the filters."""
+        query = self.session.query(self._pk_col)
+        query = self._apply_filters(query, extra_filters=extra_filters, **filters)
+        return query.count()
+
+    def exists(self, id: IdT) -> bool:
+        """Check whether a record with this primary key exists."""
+        return (
+            self.session.query(self._pk_col).filter(self._pk_col == id).first()
+            is not None
+        )
+
+
+class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, IdT = int](
+    ReadOnlyRepository[ModelT, DTOT, IdT],
+    CRUDRepositoryABC[ModelT, DTOT, CreateT, UpdateT, IdT],
+):
+    """Read access plus `create`/`update`/`delete` from dataclass payloads.
+
+    Writes `flush` so the caller still owns the transaction boundary (no
+    `commit`). `CreateT`/`UpdateT` are the payload dataclasses; `UNSET` fields are
+    skipped on write.
+
+    Example:
+        class TargetRepository(
+            Repository[Target, TargetDTO, TargetCreate, TargetUpdate]
+        ):
+            field_mapping = {"mention_rank": "rank"}
+    """
+
+    def create(self, payload: CreateT) -> IdT:
+        """Insert a record from a dataclass payload and flush.
+
+        UNSET fields are omitted, so the column or model default applies.
+
+        Returns:
+            The new primary-key value, read back after the flush.
+        """
+        kwargs = {
+            f.name: getattr(payload, f.name)
+            for f in fields(cast("DataclassInstance", payload))
+            if hasattr(self.model_class, f.name)
+            and not isinstance(getattr(payload, f.name), UnsetType)
+        }
+        model = self.model_class(**kwargs)  # type: ignore[call-arg]
+        self.session.add(model)
+        self.session.flush()
+        return getattr(model, self.pk_column)
+
+    def update(self, id: IdT, payload: UpdateT) -> bool:
+        """Apply a partial update from a dataclass payload and flush.
+
+        UNSET fields are left untouched; `None` is written as a real value
+        (SET NULL).
+
+        Returns:
+            True on success, False if no record has that primary key.
+        """
+        model = self.session.query(self.model_class).filter(self._pk_col == id).first()
+        if model is None:
+            return False
+        for f in fields(cast("DataclassInstance", payload)):
+            value = getattr(payload, f.name)
+            if not isinstance(value, UnsetType) and hasattr(model, f.name):
+                setattr(model, f.name, value)
+        self.session.flush()
+        return True
+
+    def delete(self, id: IdT) -> bool:
+        """Delete a record by primary key and flush.
+
+        Returns:
+            True on success, False if no record has that primary key.
+        """
+        model = self.session.query(self.model_class).filter(self._pk_col == id).first()
+        if model is None:
+            return False
+        self.session.delete(model)
+        self.session.flush()
+        return True
