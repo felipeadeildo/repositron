@@ -1,15 +1,32 @@
 [project]
 name = "repositron"
 version = "0.1.0"
-description = "SQLAlchemy Sugar Syntax :D"
+description = "A typed, generic repository base for SQLAlchemy 2.0. Full CRUD with no per-table boilerplate."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    { name = "Adeildo", email = "contato@felipeadeildo.com" }
+    { name = "Felipe Adeildo", email = "contato@felipeadeildo.com" }
 ]
 requires-python = ">=3.13"
+keywords = ["sqlalchemy", "repository", "orm", "crud", "typed", "generic"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
 dependencies = [
     "sqlalchemy>=2.0.51",
 ]
+
+[project.urls]
+Homepage = "https://github.com/felipeadeildo/repositron"
+Repository = "https://github.com/felipeadeildo/repositron"
+Issues = "https://github.com/felipeadeildo/repositron/issues"
 
 [build-system]
 requires = ["uv_build>=0.11.22,<0.12.0"]
