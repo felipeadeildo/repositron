@@ -23,8 +23,12 @@ dependencies = [
     "sqlalchemy>=2.0.51",
 ]
 
+[project.optional-dependencies]
+pydantic = ["pydantic>=2"]
+
 [project.urls]
 Homepage = "https://github.com/felipeadeildo/repositron"
+Documentation = "https://repositron.fa.dev.br"
 Repository = "https://github.com/felipeadeildo/repositron"
 Issues = "https://github.com/felipeadeildo/repositron/issues"
 
@@ -35,6 +39,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "prek>=0.4.5",
+    "pytest>=8.3",
     "ruff>=0.15.18",
     "ty>=0.0.51",
     "zensical>=0.0.45",
@@ -80,8 +85,14 @@ lint.ignore = [
 
 lint.isort.combine-as-imports = true
 
+lint.per-file-ignores."tests/**" = ["D", "ANN", "S101", "ARG"]  # ARG: pytest fixtures used by side-effect
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
 docstring-code-format = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
