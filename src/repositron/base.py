@@ -7,6 +7,7 @@ SQLAlchemy implementation that a project actually inherits from lives in
 """
 
 import datetime
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -17,13 +18,16 @@ from repositron.sentinel import UnsetType
 
 _list = list  # the list() method below shadows the builtin in class scope
 
-# Equality-filter value: UNSET skips the filter, None filters by IS NULL.
+type PrimaryKey = int | str | uuid.UUID
+"""A primary-key value: the type every `id` argument accepts."""
+
 type FilterValue = (
     str | int | float | bool | datetime.datetime | datetime.date | Enum | None | UnsetType
 )
+"""The value of an equality filter. `UNSET` skips the filter; `None` filters by `IS NULL`."""
 
-# order_by value: a column, a list of columns, or None for no ordering.
 type OrderBy = ColumnElement | _list[ColumnElement] | None
+"""An ordering: one column, a list of columns, or `None` for no ordering."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,7 +39,7 @@ class PaginatedResult[DTOT]:
     """Total matching rows ignoring offset/limit; for computing page counts."""
 
 
-class ReadOnlyRepositoryABC[ModelT, DTOT = ModelT, IdT = int](ABC):
+class ReadOnlyRepositoryABC[ModelT, DTOT = ModelT](ABC):
     """
     Read-only side of the repository contract (get, first, list, count, exists).
 
@@ -44,7 +48,7 @@ class ReadOnlyRepositoryABC[ModelT, DTOT = ModelT, IdT = int](ABC):
     """
 
     @abstractmethod
-    def get(self, id: IdT) -> DTOT | None:
+    def get(self, id: PrimaryKey) -> DTOT | None:
         """Get a single record by primary key, or None if absent."""
         raise NotImplementedError
 
@@ -85,40 +89,33 @@ class ReadOnlyRepositoryABC[ModelT, DTOT = ModelT, IdT = int](ABC):
 
     @abstractmethod
     def count(
-        self,
-        *,
-        extra_filters: _list[ColumnElement[bool]] | None = None,
-        **filters: FilterValue,
+        self, *, extra_filters: _list[ColumnElement[bool]] | None = None, **filters: FilterValue
     ) -> int:
         """Count records matching the filters."""
         raise NotImplementedError
 
     @abstractmethod
-    def exists(self, id: IdT) -> bool:
+    def exists(self, id: PrimaryKey) -> bool:
         """Check whether a record with this primary key exists."""
         raise NotImplementedError
 
 
-class CRUDRepositoryABC[
-    ModelT,
-    DTOT = ModelT,
-    CreateT = object,
-    UpdateT = object,
-    IdT = int,
-](ReadOnlyRepositoryABC[ModelT, DTOT, IdT]):
+class CRUDRepositoryABC[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object](
+    ReadOnlyRepositoryABC[ModelT, DTOT]
+):
     """Adds create/update/delete to the read-only contract."""
 
     @abstractmethod
-    def create(self, payload: CreateT) -> IdT:
+    def create(self, payload: CreateT) -> PrimaryKey:
         """Create a record from a dataclass payload. Returns the new primary key."""
         raise NotImplementedError
 
     @abstractmethod
-    def update(self, id: IdT, payload: UpdateT) -> bool:
+    def update(self, id: PrimaryKey, payload: UpdateT) -> bool:
         """Partial-update a record; UNSET fields are skipped. False if not found."""
         raise NotImplementedError
 
     @abstractmethod
-    def delete(self, id: IdT) -> bool:
+    def delete(self, id: PrimaryKey) -> bool:
         """Delete a record by primary key. False if not found."""
         raise NotImplementedError

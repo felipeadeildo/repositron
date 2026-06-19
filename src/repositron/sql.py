@@ -19,6 +19,7 @@ from repositron.base import (
     FilterValue,
     OrderBy,
     PaginatedResult,
+    PrimaryKey,
     ReadOnlyRepositoryABC,
 )
 from repositron.sentinel import UnsetType
@@ -29,11 +30,9 @@ if TYPE_CHECKING:
 _list = list  # avoids shadowing by the list() method in class scope
 
 
-class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
-    ReadOnlyRepositoryABC[ModelT, DTOT, IdT]
-):
+class ReadOnlyRepository[ModelT, DTOT = ModelT](ReadOnlyRepositoryABC[ModelT, DTOT]):
     """
-    Typed read access to one table, parameterized by model, DTO, and id type.
+    Typed read access to one table, parameterized by model and DTO.
 
     Reads return the DTO `DTOT` (defaults to `ModelT`, i.e. the model itself with
     no hydration). The instance holds no per-call state, so a single repository is
@@ -113,7 +112,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
         """Active DTO: the call-site override (`repo[X]`) if set, else the class default."""
         return self._active_dto if self._active_dto is not None else self.dto_class
 
-    def __getitem__[S](self, dto: type[S]) -> "ReadOnlyRepository[ModelT, S, IdT]":
+    def __getitem__[S](self, dto: type[S]) -> "ReadOnlyRepository[ModelT, S]":
         """
         Return a lightweight clone bound to `dto` for this call.
 
@@ -127,7 +126,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
         """
         clone = copy.copy(self)
         clone._active_dto = dto
-        return cast("ReadOnlyRepository[ModelT, S, IdT]", clone)
+        return cast("ReadOnlyRepository[ModelT, S]", clone)
 
     @property
     def _pk_col(self) -> ColumnElement:
@@ -258,7 +257,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
             return None
         return dto if is_dataclass(dto) else None
 
-    def get(self, id: IdT) -> DTOT | None:
+    def get(self, id: PrimaryKey) -> DTOT | None:
         """Fetch one record by primary key, hydrated to the active DTO."""
         model = self.session.query(self.model_class).filter(self._pk_col == id).first()
         if model is None:
@@ -349,14 +348,13 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, IdT = int](
         query = self._apply_filters(query, extra_filters=extra_filters, **filters)
         return query.count()
 
-    def exists(self, id: IdT) -> bool:
+    def exists(self, id: PrimaryKey) -> bool:
         """Check whether a record with this primary key exists."""
         return self.session.query(self._pk_col).filter(self._pk_col == id).first() is not None
 
 
-class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, IdT = int](
-    ReadOnlyRepository[ModelT, DTOT, IdT],
-    CRUDRepositoryABC[ModelT, DTOT, CreateT, UpdateT, IdT],
+class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object](
+    ReadOnlyRepository[ModelT, DTOT], CRUDRepositoryABC[ModelT, DTOT, CreateT, UpdateT]
 ):
     """
     Read access plus `create`/`update`/`delete` from dataclass payloads.
@@ -373,7 +371,7 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, IdT 
 
     """
 
-    def create(self, payload: CreateT) -> IdT:
+    def create(self, payload: CreateT) -> PrimaryKey:
         """
         Insert a record from a dataclass payload and flush.
 
@@ -394,7 +392,7 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, IdT 
         self.session.flush()
         return getattr(model, self.pk_column)
 
-    def update(self, id: IdT, payload: UpdateT) -> bool:
+    def update(self, id: PrimaryKey, payload: UpdateT) -> bool:
         """
         Apply a partial update from a dataclass payload and flush.
 
@@ -415,7 +413,7 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, IdT 
         self.session.flush()
         return True
 
-    def delete(self, id: IdT) -> bool:
+    def delete(self, id: PrimaryKey) -> bool:
         """
         Delete a record by primary key and flush.
 
