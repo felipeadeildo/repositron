@@ -200,8 +200,8 @@ same object is your repository return value and your `response_model`. No third
 hand-written schema.
 
 ```python
-@app.get("/users", response_model=list[UserDTO])
-def list_users(repo: UserRepository = Depends(get_repo)):
+@app.get("/users")
+def list_users(repo: Annotated[UserRepository, Depends(get_repo)]) -> list[UserDTO]:
     return repo.list(order_by=User.created_at.desc())
 ```
 
