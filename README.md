@@ -5,6 +5,9 @@
 </p>
 
 <p align="center">
+<a href="https://github.com/felipeadeildo/repositron/actions/workflows/test.yml">
+    <img src="https://github.com/felipeadeildo/repositron/actions/workflows/test.yml/badge.svg" alt="Test">
+</a>
 <a href="https://github.com/felipeadeildo/repositron/actions/workflows/release.yml">
     <img src="https://github.com/felipeadeildo/repositron/actions/workflows/release.yml/badge.svg" alt="Release">
 </a>
@@ -19,11 +22,9 @@
 </a>
 </p>
 
----
-
-**Documentation**: [https://repositron.fa.dev.br](https://repositron.fa.dev.br)
-
-**Source Code**: [https://github.com/felipeadeildo/repositron](https://github.com/felipeadeildo/repositron)
+<p align="center">
+    <strong><a href="https://repositron.fa.dev.br">Documentation</a></strong>
+</p>
 
 ---
 
@@ -33,7 +34,7 @@ class, and get `get` / `first` / `list` / `list_paginated` / `count` / `exists`
 
 Every method is fully typed off the generic parameters, so your editor knows
 that `repo.list()` returns `list[UserDTO]`. Primary keys can be `int`, `str`, or
-`uuid.UUID` — `repo.get(id)` takes any of them.
+`uuid.UUID`, and `repo.get(id)` takes any of them.
 
 ```python
 class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
@@ -234,7 +235,7 @@ def list_users(repo: Annotated[UserRepository, Depends(get_repo)]) -> list[UserD
 ### 2. No DTO at all (model as DTO)
 
 Leave the DTO parameter off and the repository returns the model itself. No
-hydration, no dict round-trip. Works the same whatever the key type — here the
+hydration, no dict round-trip. Works the same whatever the key type; here the
 table is keyed by `uuid.UUID`:
 
 ```python

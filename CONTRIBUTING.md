@@ -52,7 +52,11 @@ PR:
 uv run ruff check          # lint
 uv run ruff format --check # formatting
 uv run ty check            # types
+uv run pytest              # tests
 ```
+
+These are exactly what CI runs ([`.github/workflows/test.yml`](.github/workflows/test.yml))
+on every push and PR.
 
 The ruff config lives in `[tool.ruff]` in `pyproject.toml` (line length 100,
 target `py313`). The lint set is intentionally broad — pyflakes, pyupgrade,
@@ -100,6 +104,23 @@ and match the existing style in `base.py` and `sql.py` before writing.
   total: int
   """Total matching rows ignoring offset/limit; for computing page counts."""
   ```
+
+## Tests
+
+Tests live in `tests/`, run on in-memory SQLite, and need no setup beyond
+`uv sync`. The pydantic-hydration test is skipped unless pydantic is installed,
+so run with the extra to cover it:
+
+```bash
+uv run pytest                  # the suite
+uv run --all-extras pytest     # also exercises the pydantic DTO path
+```
+
+Files split by behavior, not by method: `test_hydration.py`, `test_projection.py`,
+`test_write.py`, `test_filtering.py`, `test_wiring.py`. Fixtures (engine, session,
+test models, DTOs, payloads) live in `tests/conftest.py`. Add tests for new
+behavior, not for every function; one assertion-rich test per behavior beats a
+test per getter. Test files are exempt from the `D`/`ANN` lint rules.
 
 ## Commits
 
