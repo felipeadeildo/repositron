@@ -1,5 +1,5 @@
 import pytest
-from conftest import User, UserRepo
+from conftest import Account, AccountRepo, User, UserRepo
 from sqlalchemy.orm import Session
 
 from repositron import UNSET
@@ -8,6 +8,13 @@ from repositron import UNSET
 def test_equality_and_extra_filters_combine(session: Session, seed_users: list[User]):
     rows = UserRepo(session).list(is_active=True, extra_filters=[User.age > 40])
     assert {r.name for r in rows} == {"Grace"}  # Ada is active but 36; Linus is 54 but inactive
+
+
+def test_uuid_equality_filter(session: Session, seed_accounts: list[Account]):
+    # filtering by a uuid.UUID value must type-check, not just work at runtime
+    owner = seed_accounts[0].owner_id
+    rows = AccountRepo(session).list(owner_id=owner)
+    assert {r.name for r in rows} == {"Acme"}
 
 
 def test_none_filter_is_is_null(session: Session, seed_users: list[User]):

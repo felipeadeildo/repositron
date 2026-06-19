@@ -29,6 +29,7 @@ class Account(Base):
     __tablename__ = "accounts"
 
     account_id: Mapped[str] = mapped_column(primary_key=True)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(default=None)
     name: Mapped[str]
     mention_rank: Mapped[int | None] = mapped_column(default=None)
 
@@ -146,7 +147,7 @@ def seed_users(session: Session) -> list[User]:
 @pytest.fixture
 def seed_accounts(session: Session) -> list[Account]:
     accounts = [
-        Account(account_id=str(uuid.uuid4()), name="Acme", mention_rank=3),
+        Account(account_id=str(uuid.uuid4()), owner_id=uuid.uuid4(), name="Acme", mention_rank=3),
         Account(account_id=str(uuid.uuid4()), name="Globex", mention_rank=None),
     ]
     session.add_all(accounts)
