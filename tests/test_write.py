@@ -3,10 +3,10 @@ from conftest import User, UserCreate, UserRepo, UserUpdate
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from repositron import UNSET, PrimaryKey
+from repositron import UNSET
 
 
-def _fetch(session: Session, uid: PrimaryKey) -> User:
+def _fetch(session: Session, uid: int) -> User:
     row = session.get(User, uid)
     assert row is not None
     return row
