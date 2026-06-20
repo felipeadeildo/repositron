@@ -1,5 +1,13 @@
+from dataclasses import dataclass
+
 import pytest
-from conftest import Account, AccountRepo, User, UserDTO, UserRepo
+from conftest import (
+    Account,
+    AccountRepo,
+    User,
+    UserDTO,
+    UserRepo,
+)
 from sqlalchemy.orm import Session
 
 from repositron import UNSET, Repository, UnsetType
@@ -34,12 +42,39 @@ def test_custom_pk_column_used(session: Session, seed_accounts: list[Account]):
     assert repo.exists("missing") is False
 
 
+def test_create_reads_pk_back_with_attribute_column(session: Session):
+    # create() must resolve the pk name from an InstrumentedAttribute, not getattr a column object
+    class AccountWriteRepo(Repository[Account, Account, object, object, str]):
+        pk_column = Account.account_id
+
+    repo = AccountWriteRepo(session)
+
+    @dataclass
+    class AccountCreate:
+        account_id: str
+        name: str
+
+    new_id = repo.create(AccountCreate(account_id="abc-123", name="Initech"))
+    assert new_id == "abc-123"
+    assert repo.get("abc-123") is not None
+
+
 def test_bad_pk_column_raises(session: Session):
     class WrongPK(Repository[User]):
         pk_column = "nope"
 
     with pytest.raises(AttributeError, match="nope"):
         WrongPK(session).get(1)
+
+
+def test_pk_column_foreign_attribute_raises(session: Session):
+    # A column reference from the wrong model is resolved by name through this model,
+    # so a name that doesn't exist on it fails loudly instead of cross-joining.
+    class CrossRepo(Repository[User, User, object, object, str]):
+        pk_column = Account.account_id  # Account's column, not User's
+
+    with pytest.raises(AttributeError, match="account_id"):
+        CrossRepo(session).get("x")
 
 
 def test_empty_dto_projection_raises(session: Session, seed_users: list[User]):

@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
-from repositron import UNSET, Repository, UnsetType
+from repositron import UNSET, ReadOnlyRepository, Repository, UnsetType
 
 
 class Base(DeclarativeBase):
@@ -83,12 +83,20 @@ class AccountNarrow:
 # --- repositories ------------------------------------------------------------
 
 
+# PKT left to default (int): User.id is an int key.
 class UserRepo(Repository[User, UserDTO, UserCreate, UserUpdate]):
     pass
 
 
-class AccountRepo(Repository[Account, AccountDTO]):
+# Full CRUD with a str key: PKT=str in the 5th slot, pk_column as a string name.
+class AccountRepo(Repository[Account, AccountDTO, object, object, str]):
     pk_column = "account_id"
+    field_mapping: ClassVar[dict[str, str]] = {"mention_rank": "rank"}
+
+
+# pk_column as a column reference, PKT typed str so get/exists are checked against str.
+class AccountReadRepo(ReadOnlyRepository[Account, AccountDTO, str]):
+    pk_column = Account.account_id
     field_mapping: ClassVar[dict[str, str]] = {"mention_rank": "rank"}
 
 

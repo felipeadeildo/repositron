@@ -11,7 +11,7 @@ projection, and model-to-DTO hydration, without per-table CRUD boilerplate.
         field_mapping = {"mention_rank": "rank"}
 """
 
-from repositron.base import OrderBy, PaginatedResult, PrimaryKey
+from repositron.base import OrderBy, PaginatedResult
 from repositron.sentinel import UNSET, UnsetType
 from repositron.sql import ReadOnlyRepository, Repository
 
@@ -19,7 +19,6 @@ __all__ = [
     "UNSET",
     "OrderBy",
     "PaginatedResult",
-    "PrimaryKey",
     "ReadOnlyRepository",
     "Repository",
     "UnsetType",

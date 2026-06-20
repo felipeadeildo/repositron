@@ -22,15 +22,12 @@ _list = list  # the list() method below shadows the builtin in class scope
 type OrderColumn = ColumnElement | InstrumentedAttribute
 """A single ordering term: a model attribute (`User.id`) or an expression (`User.id.desc()`)."""
 
-type PrimaryKey = int | str | uuid.UUID
-"""A primary-key value: the type every `id` argument accepts."""
-
 type FilterValue = (
-    str
-    | int
+    int
+    | str
+    | uuid.UUID
     | float
     | bool
-    | uuid.UUID
     | datetime.datetime
     | datetime.date
     | Enum
@@ -52,7 +49,7 @@ class PaginatedResult[DTOT]:
     """Total matching rows ignoring offset/limit; for computing page counts."""
 
 
-class ReadOnlyRepositoryABC[ModelT, DTOT = ModelT](ABC):
+class ReadOnlyRepositoryABC[ModelT, DTOT = ModelT, PKT = int](ABC):
     """
     Read-only side of the repository contract (get, first, list, count, exists).
 
@@ -61,7 +58,7 @@ class ReadOnlyRepositoryABC[ModelT, DTOT = ModelT](ABC):
     """
 
     @abstractmethod
-    def get(self, id: PrimaryKey) -> DTOT | None:
+    def get(self, id: PKT) -> DTOT | None:
         """Get a single record by primary key, or None if absent."""
         raise NotImplementedError
 
@@ -108,27 +105,31 @@ class ReadOnlyRepositoryABC[ModelT, DTOT = ModelT](ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def exists(self, id: PrimaryKey) -> bool:
+    def exists(self, id: PKT) -> bool:
         """Check whether a record with this primary key exists."""
         raise NotImplementedError
 
 
-class CRUDRepositoryABC[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object](
-    ReadOnlyRepositoryABC[ModelT, DTOT]
-):
+class CRUDRepositoryABC[
+    ModelT,
+    DTOT = ModelT,
+    CreateT = object,
+    UpdateT = object,
+    PKT = int,
+](ReadOnlyRepositoryABC[ModelT, DTOT, PKT]):
     """Adds create/update/delete to the read-only contract."""
 
     @abstractmethod
-    def create(self, payload: CreateT) -> PrimaryKey:
+    def create(self, payload: CreateT) -> PKT:
         """Create a record from a dataclass payload. Returns the new primary key."""
         raise NotImplementedError
 
     @abstractmethod
-    def update(self, id: PrimaryKey, payload: UpdateT) -> bool:
+    def update(self, id: PKT, payload: UpdateT) -> bool:
         """Partial-update a record; UNSET fields are skipped. False if not found."""
         raise NotImplementedError
 
     @abstractmethod
-    def delete(self, id: PrimaryKey) -> bool:
+    def delete(self, id: PKT) -> bool:
         """Delete a record by primary key. False if not found."""
         raise NotImplementedError

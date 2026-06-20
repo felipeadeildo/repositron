@@ -11,7 +11,7 @@ from dataclasses import fields, is_dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, get_origin
 
-from sqlalchemy.orm import Query, Session
+from sqlalchemy.orm import InstrumentedAttribute, Query, Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from repositron.base import (
@@ -19,7 +19,6 @@ from repositron.base import (
     FilterValue,
     OrderBy,
     PaginatedResult,
-    PrimaryKey,
     ReadOnlyRepositoryABC,
 )
 from repositron.sentinel import UnsetType
@@ -30,7 +29,9 @@ if TYPE_CHECKING:
 _list = list  # avoids shadowing by the list() method in class scope
 
 
-class ReadOnlyRepository[ModelT, DTOT = ModelT](ReadOnlyRepositoryABC[ModelT, DTOT]):
+class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
+    ReadOnlyRepositoryABC[ModelT, DTOT, PKT]
+):
     """
     Typed read access to one table, parameterized by model and DTO.
 
@@ -54,8 +55,9 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT](ReadOnlyRepositoryABC[ModelT, DT
 
     field_mapping: ClassVar[dict[str, str]] = {}
     """Renamed fields as `{model_field: dto_field}`, applied both when hydrating and when resolving projection columns."""  # noqa: E501
-    pk_column: ClassVar[str] = "id"
-    """Primary-key column name; override for models keyed elsewhere (e.g. `"url_hash"`)."""
+
+    pk_column: ClassVar[str | InstrumentedAttribute] = "id"
+    """Primary-key column, as an attribute name (`"url_hash"`) or a column reference (`User.id`)."""
 
     def __init__(self, session: Session) -> None:
         """
@@ -112,7 +114,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT](ReadOnlyRepositoryABC[ModelT, DT
         """Active DTO: the call-site override (`repo[X]`) if set, else the class default."""
         return self._active_dto if self._active_dto is not None else self.dto_class
 
-    def __getitem__[S](self, dto: type[S]) -> "ReadOnlyRepository[ModelT, S]":
+    def __getitem__[S](self, dto: type[S]) -> "ReadOnlyRepository[ModelT, S, PKT]":
         """
         Return a lightweight clone bound to `dto` for this call.
 
@@ -126,15 +128,21 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT](ReadOnlyRepositoryABC[ModelT, DT
         """
         clone = copy.copy(self)
         clone._active_dto = dto
-        return cast("ReadOnlyRepository[ModelT, S]", clone)
+        return cast("ReadOnlyRepository[ModelT, S, PKT]", clone)
 
-    @property
-    def _pk_col(self) -> ColumnElement:
-        """The primary-key column element, configurable via `pk_column`."""
-        col = getattr(self.model_class, self.pk_column, None)
+    @cached_property
+    def _pk_col(self) -> InstrumentedAttribute:
+        """The primary-key column, resolved from `pk_column` (a name or a column reference)."""
+        # Read pk_column off the class: a column reference is a descriptor, and instance
+        # access (self.pk_column) would fire it against this unmapped repo and raise.
+        pk = type(self).pk_column
+        # Resolve by name through the model either way, so a column reference is validated
+        # to belong to this model (a foreign column would otherwise build a cartesian query).
+        name = pk if isinstance(pk, str) else pk.key
+        col = getattr(self.model_class, name, None)
         if col is None:
-            raise AttributeError(f"{self.model_class.__name__} has no column '{self.pk_column}'")
-        return col  # type: ignore[return-value]
+            raise AttributeError(f"{self.model_class.__name__} has no column '{name}'")
+        return col
 
     def _project_columns(self, dto: type) -> _list[ColumnElement]:
         """Resolve a dataclass DTO's fields to model columns (in field order), honoring field_mapping."""  # noqa: E501
@@ -257,7 +265,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT](ReadOnlyRepositoryABC[ModelT, DT
             return None
         return dto if is_dataclass(dto) else None
 
-    def get(self, id: PrimaryKey) -> DTOT | None:
+    def get(self, id: PKT) -> DTOT | None:
         """Fetch one record by primary key, hydrated to the active DTO."""
         model = self.session.query(self.model_class).filter(self._pk_col == id).first()
         if model is None:
@@ -348,13 +356,13 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT](ReadOnlyRepositoryABC[ModelT, DT
         query = self._apply_filters(query, extra_filters=extra_filters, **filters)
         return query.count()
 
-    def exists(self, id: PrimaryKey) -> bool:
+    def exists(self, id: PKT) -> bool:
         """Check whether a record with this primary key exists."""
         return self.session.query(self._pk_col).filter(self._pk_col == id).first() is not None
 
 
-class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object](
-    ReadOnlyRepository[ModelT, DTOT], CRUDRepositoryABC[ModelT, DTOT, CreateT, UpdateT]
+class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT = int](
+    ReadOnlyRepository[ModelT, DTOT, PKT], CRUDRepositoryABC[ModelT, DTOT, CreateT, UpdateT, PKT]
 ):
     """
     Read access plus `create`/`update`/`delete` from dataclass payloads.
@@ -371,7 +379,7 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object](
 
     """
 
-    def create(self, payload: CreateT) -> PrimaryKey:
+    def create(self, payload: CreateT) -> PKT:
         """
         Insert a record from a dataclass payload and flush.
 
@@ -387,12 +395,12 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object](
             if hasattr(self.model_class, f.name)
             and not isinstance(getattr(payload, f.name), UnsetType)
         }
-        model = self.model_class(**kwargs)  # type: ignore[call-arg]
+        model = self.model_class(**kwargs)
         self.session.add(model)
         self.session.flush()
-        return getattr(model, self.pk_column)
+        return getattr(model, self._pk_col.key)
 
-    def update(self, id: PrimaryKey, payload: UpdateT) -> bool:
+    def update(self, id: PKT, payload: UpdateT) -> bool:
         """
         Apply a partial update from a dataclass payload and flush.
 
@@ -413,7 +421,7 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object](
         self.session.flush()
         return True
 
-    def delete(self, id: PrimaryKey) -> bool:
+    def delete(self, id: PKT) -> bool:
         """
         Delete a record by primary key and flush.
 
