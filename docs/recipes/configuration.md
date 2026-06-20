@@ -55,8 +55,8 @@ only on the tables that need it.
 ## Type parameters and their defaults
 
 ```python
-Repository[Model, DTO = Model, Create = object, Update = object]
-ReadOnlyRepository[Model, DTO = Model]
+Repository[Model, DTO = Model, Create = object, Update = object, PK = int]
+ReadOnlyRepository[Model, DTO = Model, PK = int]
 ```
 
 Only `Model` is required. Everything after it has a default, so you supply each
@@ -68,19 +68,27 @@ parameter only when you actually need it.
 | `DTO`     | defaults to `Model`: reads return the model itself, unhydrated |
 | `Create`  | defaults to `object`: you simply do not call `create`         |
 | `Update`  | defaults to `object`: you simply do not call `update`         |
+| `PK`      | defaults to `int`: the type of the primary key, so `get`/`exists`/`delete` take it and `create` returns it |
 
 That is why all of these are valid, each adding only what it uses:
 
 ```python
 class AccountRepository(Repository[Account]): ...
-# read/write, returns Account, no separate DTO or payloads declared
+# read/write, returns Account, int key, no separate DTO or payloads declared
 
 class UserReadRepo(ReadOnlyRepository[User, UserDTO]): ...
-# read-only, returns UserDTO
+# read-only, returns UserDTO, int key
 
 class UserRepo(Repository[User, UserDTO, UserCreate, UserUpdate]): ...
-# the full set
+# the full set, int key
+
+class SessionRepo(Repository[Session, SessionDTO, SessionCreate, SessionUpdate, str]): ...
+# full set with a string key
 ```
+
+The key type lives in the last slot so the int-keyed majority never writes it.
+When the key is a `str` or `uuid`, declare it there, see
+[primary keys](primary-keys.md) for the why and the slot mechanics.
 
 The parameters are read off your class declaration at runtime, so you do not
 register the model or wire anything up. Inheriting with the types *is* the
@@ -129,9 +137,21 @@ both sides, which is the usual case, so the map only ever holds the exceptions.
 
 ## `pk_column`: when the key is not `id`
 
-The base assumes the key column is named `id`. When it is not, set `pk_column`
-and every id-based method follows. The details, including `uuid` keys and
-composite keys, live in [primary keys](primary-keys.md).
+The base assumes the key column is named `id`. When it is not, set `pk_column`,
+either to the column name or to the column reference itself, and every id-based
+method follows:
+
+```python
+class PageRepository(Repository[Page, PageDTO, ..., ..., str]):
+    pk_column = "url_hash"        # by name
+
+class PageRepository(Repository[Page, PageDTO, ..., ..., str]):
+    pk_column = Page.url_hash     # by column reference (checked against the model)
+```
+
+The column's *name* is a runtime concern (`pk_column`); the key's *type* is the
+last type parameter (`PK`). They are separate knobs. The details, including
+`str`/`uuid` keys and composite keys, live in [primary keys](primary-keys.md).
 
 ## Defaults you can override at the class level
 

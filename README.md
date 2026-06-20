@@ -33,8 +33,9 @@ class, and get `get` / `first` / `list` / `list_paginated` / `count` / `exists`
 / `create` / `update` / `delete` with no per-table boilerplate.
 
 Every method is fully typed off the generic parameters, so your editor knows
-that `repo.list()` returns `list[UserDTO]`. Primary keys can be `int`, `str`, or
-`uuid.UUID`, and `repo.get(id)` takes any of them.
+that `repo.list()` returns `list[UserDTO]`. The primary-key type is one of those
+parameters (`int` by default), so `repo.get(id)` is checked against it, declare
+`str` or `uuid.UUID` for tables keyed that way.
 
 ```python
 class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
@@ -242,7 +243,9 @@ table is keyed by `uuid.UUID`:
 import uuid
 from repositron import Repository
 
-class AccountRepository(Repository[Account, Account, AccountCreate, AccountUpdate]):
+class AccountRepository(
+    Repository[Account, Account, AccountCreate, AccountUpdate, uuid.UUID]
+):
     pass
 
 repo.get(uuid.uuid4())        # -> Account | None
@@ -271,21 +274,21 @@ from repositron import (
     Repository,            # full CRUD generic base
     ReadOnlyRepository,    # read-only generic base
     PaginatedResult,       # {items, total} container
-    PrimaryKey,            # primary-key value type: int | str | uuid.UUID
     OrderBy,               # order_by argument type
     UNSET, UnsetType,      # partial-update sentinel
 )
 ```
 
-Type parameters: `Repository[ModelT, DTOT=ModelT, CreateT, UpdateT]`.
+Type parameters: `Repository[ModelT, DTOT=ModelT, CreateT, UpdateT, PKT=int]`.
 `ModelT` is required; everything else has a default, so `Repository[Account]`
-is a valid read/write repository returning `Account`. Primary keys are
-`PrimaryKey` (`int | str | uuid.UUID`).
+is a valid read/write repository returning `Account` with an `int` key. For a
+`str` or `uuid` key, declare `PKT` in the last slot
+(`Repository[Session, SessionDTO, SessionCreate, SessionUpdate, str]`).
 
-| Class attribute | Purpose                                       | Default |
-| --------------- | --------------------------------------------- | ------- |
-| `field_mapping` | `{model_field: dto_field}` for renamed fields | `{}`    |
-| `pk_column`     | primary-key column name                       | `"id"`  |
+| Class attribute | Purpose                                          | Default |
+| --------------- | ------------------------------------------------ | ------- |
+| `field_mapping` | `{model_field: dto_field}` for renamed fields    | `{}`    |
+| `pk_column`     | primary-key column, by name or column reference  | `"id"`  |
 
 ## Design notes
 

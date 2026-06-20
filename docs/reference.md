@@ -14,7 +14,6 @@ from repositron import (
     Repository,            # full CRUD generic base
     ReadOnlyRepository,    # read-only generic base
     PaginatedResult,       # the {items, total} container
-    PrimaryKey,            # primary-key value type: int | str | uuid.UUID
     OrderBy,               # the order_by argument type
     UNSET, UnsetType,      # the partial-update sentinel and its type
 )
@@ -23,28 +22,31 @@ from repositron import (
 ## Type parameters
 
 ```python
-Repository[Model, DTO = Model, Create = object, Update = object]
-ReadOnlyRepository[Model, DTO = Model]
+Repository[Model, DTO = Model, Create = object, Update = object, PK = int]
+ReadOnlyRepository[Model, DTO = Model, PK = int]
 ```
 
 `Model` is required. `DTO` defaults to the model itself (reads return the model,
 unhydrated). `Create` and `Update` are the payload dataclasses your writes
-accept. So `Repository[Account]` is a valid read/write repository returning
-`Account`, and you add the other parameters only as you need them.
+accept. `PK` is the primary-key type, defaulting to `int`; declare it (last,
+after the others) when your key is a `str` or `uuid`. So `Repository[Account]`
+is a valid read/write repository returning `Account` with an `int` key, and you
+add the other parameters only as you need them. See
+[primary keys](recipes/primary-keys.md).
 
 ## Class attributes
 
 Set these on your repository subclass.
 
-| Attribute       | Type                | Purpose                                       | Default |
-| --------------- | ------------------- | --------------------------------------------- | ------- |
-| `field_mapping` | `dict[str, str]`    | `{model_column: dto_field}` for renamed fields | `{}`    |
-| `pk_column`     | `str`               | primary-key column name                       | `"id"`  |
+| Attribute       | Type                            | Purpose                                       | Default |
+| --------------- | ------------------------------- | --------------------------------------------- | ------- |
+| `field_mapping` | `dict[str, str]`                | `{model_column: dto_field}` for renamed fields | `{}`    |
+| `pk_column`     | `str \| InstrumentedAttribute`  | primary-key column, by name or column reference | `"id"`  |
 
 ```python
 class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
     field_mapping = {"full_name": "name"}
-    pk_column = "id"
+    pk_column = User.id   # or "id"
 ```
 
 ## Read methods
@@ -78,9 +80,10 @@ Available on both `ReadOnlyRepository` and `Repository`.
 
 Available on `Repository` only.
 
-`create(payload) -> PrimaryKey`
+`create(payload) -> PK`
 :   Insert from a dataclass payload and flush. `UNSET` fields are omitted so the
-    column default applies. Returns the new primary key.
+    column default applies. Returns the new primary key, typed as the `PK`
+    parameter (`int` by default).
 
 `update(id, payload) -> bool`
 :   Partial-update from a dataclass payload and flush. `UNSET` fields are skipped;
