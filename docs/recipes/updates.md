@@ -99,3 +99,35 @@ if not repo.update(user_id, UserUpdate(email=new_email)):
 ```
 
 `delete` follows the same convention. `create` returns the new primary key.
+
+## Committing { #transactions }
+
+Writes `flush` by default: visible in your session, but not committed, so the
+transaction boundary stays in your app. Opt into committing per instance or per
+call.
+
+```python
+repo = UserRepository(session, autocommit=True)   # every write commits
+repo.create(UserCreate(name="Ada"))
+
+job_id = deploy_repo.create(DeployJobCreate(...), commit=True)   # just this one
+deploy_worker.delay(job_id)   # a separate process only sees committed rows
+```
+
+`commit=` overrides the instance default both ways.
+
+| `autocommit` | `commit=` | Result               |
+| ------------ | --------- | -------------------- |
+| `False`      | `None`    | flush only (default) |
+| any          | `True`    | commit this write    |
+| any          | `False`   | flush this write only |
+| `True`       | `None`    | commit every write   |
+
+### On error
+
+A failed flush or commit rolls the session back before re-raising, so it stays
+usable. Turn it off to keep the session as-is and roll back yourself:
+
+```python
+Repository(session, rollback_on_error=False)
+```

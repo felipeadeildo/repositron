@@ -122,11 +122,13 @@ Hover any of those calls in your editor. `repo.list()` is `list[UserDTO]`, not
 serializes, so there is no second schema to keep in step.
 
 !!! note "The session stays yours"
-    repositron never opens, commits, or closes the session. Writes call `flush`
-    and stop there, which leaves the decision of when to commit, and when to roll
-    back, entirely in your application. One repository instance holds no per-call
-    state, so it is safe to build once and inject everywhere. This boundary is
-    one of the [design principles](reference.md#design-principles).
+    repositron never opens or closes the session, and by default writes only
+    `flush`, leaving when to commit and roll back to your application. When you
+    do want a write committed, opt in with `Repository(session, autocommit=True)`
+    or per call with `repo.create(payload, commit=True)`; see
+    [transactions](recipes/updates.md#transactions). One repository instance holds
+    no per-call state, so it is safe to build once and inject everywhere. This
+    boundary is one of the [design principles](reference.md#design-principles).
 
 ## Where to go next
 

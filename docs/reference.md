@@ -76,21 +76,33 @@ Available on both `ReadOnlyRepository` and `Repository`.
 :   A clone bound to `Shape` for the next call, triggering column projection when
     `Shape` is a narrow dataclass. See [projection](recipes/projection.md).
 
+## Constructor
+
+`Repository(session, *, autocommit=False, rollback_on_error=True)`
+:   `session` is the caller-owned SQLAlchemy `Session`. With `autocommit=True`,
+    every write commits after its flush; the default flushes only and leaves the
+    transaction to you. `rollback_on_error` (`True` by default) rolls the session
+    back before re-raising when a flush or commit fails; set it to `False` to
+    leave that rollback to you. See
+    [transactions](recipes/updates.md#transactions).
+
 ## Write methods
 
-Available on `Repository` only.
+Available on `Repository` only. Each takes `commit: bool | None = None`: `None`
+follows the instance's `autocommit`, `True`/`False` overrides it for that one
+call. On a commit failure the session is rolled back and the error re-raised.
 
-`create(payload) -> PK`
+`create(payload, *, commit=None) -> PK`
 :   Insert from a dataclass payload and flush. `UNSET` fields are omitted so the
     column default applies. Returns the new primary key, typed as the `PK`
     parameter (`int` by default).
 
-`update(id, payload) -> bool`
+`update(id, payload, *, commit=None) -> bool`
 :   Partial-update from a dataclass payload and flush. `UNSET` fields are skipped;
     `None` is written as `NULL`. `False` if no row has that key. See
     [updates](recipes/updates.md).
 
-`delete(id) -> bool`
+`delete(id, *, commit=None) -> bool`
 :   Delete by primary key and flush. `False` if no row has that key.
 
 ## Hooks to override
@@ -121,8 +133,10 @@ class PaginatedResult[DTO]:
 
 The four ideas that explain every choice in the API.
 
-- **The session is the caller's.** repositron flushes, never commits or closes,
-  so transaction boundaries stay in your application code.
+- **The session is the caller's.** repositron flushes and never closes the
+  session, so transaction boundaries stay in your application code by default.
+  Committing is opt-in, per instance (`autocommit=True`) or per write
+  (`commit=True`); see [transactions](recipes/updates.md#transactions).
 - **One source of truth per field name.** A rename declared once in
   `field_mapping` applies to both hydration and projection.
 - **Ordering is never implicit.** `list` and `first` are unordered unless asked;

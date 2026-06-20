@@ -216,6 +216,20 @@ repo.list_paginated(0, 20)                                 # ValueError
 repo.list_paginated(0, 20, order_by=User.id)               # PaginatedResult(items=[...], total=...)
 ```
 
+### Commit when you need it, not by default
+
+Writes `flush` so the caller keeps the transaction boundary. When the row has
+to be visible past this transaction, commit at the instance level or per call.
+
+```python
+repo = ItemRepository(session, autocommit=True)   # every write commits
+repo.create(payload)
+
+repo = ItemRepository(session)                     # flush-only (default)
+item_id = repo.create(payload, commit=True)        # but commit this one,
+deploy_site.delay(item_id)                          # so the worker process sees it
+```
+
 ## Three shapes of DTO
 
 The DTO is an optimization, not a mandate. Pick the one that fits, and pay only
@@ -279,7 +293,7 @@ from repositron import (
 )
 ```
 
-Type parameters: `Repository[ModelT, DTOT=ModelT, CreateT, UpdateT, PKT=int]`.
+Type parameters: `Repository[ModelT, DTOT=ModelT, CreateT=object, UpdateT=object, PKT=int]`.
 `ModelT` is required; everything else has a default, so `Repository[Account]`
 is a valid read/write repository returning `Account` with an `int` key. For a
 `str` or `uuid` key, declare `PKT` in the last slot
@@ -292,8 +306,10 @@ is a valid read/write repository returning `Account` with an `int` key. For a
 
 ## Design notes
 
-- The session is the caller's. The repository never opens, commits, or closes
-  it; writes `flush`, so transaction boundaries stay in the app.
+- The session is the caller's. The repository never opens or closes it, and by
+  default only `flush`es, so transaction boundaries stay in the app. Opt into
+  committing with `Repository(session, autocommit=True)` or per write with
+  `repo.create(payload, commit=True)`; on failure it rolls back and re-raises.
 - One source of truth per field name: declare a rename once in `field_mapping`
   and it applies to both hydration and projection.
 - Ordering is never implicit. `list` / `first` default to unordered; pagination
