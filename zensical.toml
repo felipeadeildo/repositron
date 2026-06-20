@@ -61,6 +61,7 @@ nav = [
     { "Primary keys" = "recipes/primary-keys.md" },
   ] },
   { "API reference" = "reference.md" },
+  { "Limitations & design notes" = "limitations.md" },
 ]
 
 # With the "extra_css" option you can add your own CSS styling to customize

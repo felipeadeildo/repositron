@@ -52,7 +52,6 @@ Leave the DTO parameter off and the DTO defaults to the model itself. Reads then
 return the model instances directly, with no conversion step:
 
 ```python
-import uuid
 from repositron import Repository
 
 
@@ -60,7 +59,7 @@ class AccountRepository(Repository[Account]):   # DTO defaults to Account
     pass
 
 
-repo.get(uuid.uuid4())       # Account | None
+repo.get(1)                  # Account | None
 repo.list(status="active")   # list[Account]
 ```
 
