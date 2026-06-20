@@ -7,6 +7,7 @@ column projection via `repo[DTO]`, and the equality/expression filter split.
 """
 
 import copy
+from collections.abc import Callable
 from dataclasses import fields, is_dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, get_origin
@@ -62,8 +63,8 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
     def __init__(self, session: Session) -> None:
         """
         Args:
-            session: Caller-owned session. The repository never opens, commits, or
-                closes it; writes `flush` only.
+            session: Caller-owned session. The repository never opens or closes it,
+                and reads never write; `Repository` writes `flush` (commit is opt-in).
 
         """
         self.session = session
@@ -367,9 +368,10 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
     """
     Read access plus `create`/`update`/`delete` from dataclass payloads.
 
-    Writes `flush` so the caller still owns the transaction boundary (no
-    `commit`). `CreateT`/`UpdateT` are the payload dataclasses; `UNSET` fields are
-    skipped on write.
+    Writes `flush` so the caller still owns the transaction boundary. Set
+    `autocommit=True` on the instance, or pass `commit=True` on a single write,
+    to commit too. `CreateT`/`UpdateT` are the payload dataclasses; `UNSET`
+    fields are skipped on write.
 
     Example:
         class TargetRepository(
@@ -379,11 +381,48 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
 
     """
 
-    def create(self, payload: CreateT) -> PKT:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        autocommit: bool = False,
+        rollback_on_error: bool = True,
+    ) -> None:
+        """
+        Args:
+            session: Caller-owned session. Never opened or closed by the repository.
+            autocommit: When True, every write commits after its flush. Default False keeps the
+                transaction boundary in the caller's hands.
+            rollback_on_error: When True (default), a failed flush or commit rolls the session
+                back before re-raising. Set False to leave the rollback to you.
+
+        """
+        super().__init__(session)
+        self.autocommit = autocommit
+        self.rollback_on_error = rollback_on_error
+
+    def _flush(self) -> None:
+        self._run(self.session.flush)
+
+    def _commit(self, commit: bool | None) -> None:
+        """Commit if `commit` is True, or None and `autocommit` is on."""
+        if commit if commit is not None else self.autocommit:
+            self._run(self.session.commit)
+
+    def _run(self, op: Callable[[], None]) -> None:
+        try:
+            op()
+        except Exception:
+            if self.rollback_on_error:
+                self.session.rollback()
+            raise
+
+    def create(self, payload: CreateT, *, commit: bool | None = None) -> PKT:
         """
         Insert a record from a dataclass payload and flush.
 
         UNSET fields are omitted, so the column or model default applies.
+        `commit` overrides `autocommit` for this call.
 
         Returns:
             The new primary-key value, read back after the flush.
@@ -397,15 +436,17 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
         }
         model = self.model_class(**kwargs)
         self.session.add(model)
-        self.session.flush()
-        return getattr(model, self._pk_col.key)
+        self._flush()
+        pk = getattr(model, self._pk_col.key)
+        self._commit(commit)
+        return pk
 
-    def update(self, id: PKT, payload: UpdateT) -> bool:
+    def update(self, id: PKT, payload: UpdateT, *, commit: bool | None = None) -> bool:
         """
         Apply a partial update from a dataclass payload and flush.
 
         UNSET fields are left untouched; `None` is written as a real value
-        (SET NULL).
+        (SET NULL). `commit` overrides `autocommit` for this call.
 
         Returns:
             True on success, False if no record has that primary key.
@@ -418,12 +459,14 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
             value = getattr(payload, f.name)
             if not isinstance(value, UnsetType) and hasattr(model, f.name):
                 setattr(model, f.name, value)
-        self.session.flush()
+        self._flush()
+        self._commit(commit)
         return True
 
-    def delete(self, id: PKT) -> bool:
+    def delete(self, id: PKT, *, commit: bool | None = None) -> bool:
         """
         Delete a record by primary key and flush.
+        `commit` overrides `autocommit` for this call.
 
         Returns:
             True on success, False if no record has that primary key.
@@ -433,5 +476,6 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
         if model is None:
             return False
         self.session.delete(model)
-        self.session.flush()
+        self._flush()
+        self._commit(commit)
         return True
