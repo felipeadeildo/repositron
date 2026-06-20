@@ -1,6 +1,7 @@
 import pytest
 from conftest import User, UserCreate, UserRepo, UserUpdate
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, PendingRollbackError
 from sqlalchemy.orm import Session
 
 from repositron import UNSET
@@ -66,3 +67,50 @@ def test_writes_flush_but_do_not_commit(session: Session):
     # but a rollback discards it -> the repo never committed
     session.rollback()
     assert session.scalar(select(User).where(User.name == "Ephemeral")) is None
+
+
+def test_autocommit_instance_survives_rollback(session: Session):
+    repo = UserRepo(session, autocommit=True)
+    repo.create(UserCreate(name="Durable"))
+    session.rollback()  # nothing to undo: the create already committed
+    assert session.scalar(select(User).where(User.name == "Durable")) is not None
+
+
+def test_commit_override_true_on_flush_only_repo(session: Session):
+    repo = UserRepo(session)  # autocommit off
+    repo.create(UserCreate(name="Forced"), commit=True)
+    session.rollback()
+    assert session.scalar(select(User).where(User.name == "Forced")) is not None
+
+
+def test_commit_override_false_on_autocommit_repo(session: Session):
+    repo = UserRepo(session, autocommit=True)
+    repo.create(UserCreate(name="Held"), commit=False)  # override off
+    session.rollback()
+    assert session.scalar(select(User).where(User.name == "Held")) is None
+
+
+# name is NOT NULL; nulling it forces an IntegrityError at flush. The UserUpdate
+# field is typed str|UNSET (None is not a valid value), so the checker is told to
+# allow this one deliberately-invalid payload.
+_NULL_NAME = UserUpdate(name=None)  # type: ignore[ty:invalid-argument-type]
+
+
+def test_flush_error_rolls_back_by_default(session: Session):
+    repo = UserRepo(session)
+    uid = repo.create(UserCreate(name="Ada"))
+    with pytest.raises(IntegrityError):
+        repo.update(uid, _NULL_NAME)
+    # default rollback_on_error left the session usable (not pending); the
+    # rollback reverted the whole uncommitted transaction, the create included
+    assert session.get(User, uid) is None
+
+
+def test_flush_error_leaves_session_pending_when_disabled(session: Session):
+    repo = UserRepo(session, rollback_on_error=False)
+    uid = repo.create(UserCreate(name="Ada"))
+    with pytest.raises(IntegrityError):
+        repo.update(uid, _NULL_NAME)
+    # no rollback happened: the session is stuck until the caller rolls back
+    with pytest.raises(PendingRollbackError):
+        session.scalar(select(User))
