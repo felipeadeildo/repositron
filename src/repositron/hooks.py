@@ -1,15 +1,17 @@
 """
-Lifecycle hooks: tag a method with `@on` and the repository runs it inside its
-own create/update/delete/hydration, with no override and no `super()` chaining.
+Lifecycle hooks: tag a method with `@on` to run it inside a create, update,
+delete, or read, with no method override and no `super()` chaining.
 
-    class ArticleRepository(Repository[Article, ...]):
-        @on("create", mode="before")
-        def stamp_published(self, model, payload):
-            model.published_at = datetime.now(UTC)
+```python
+class ArticleRepository(Repository[Article, ...]):
+    @on("create", mode="before")
+    def stamp_published(self, model, payload):
+        model.published_at = datetime.now(UTC)
+```
 
-The base collects tagged methods across the MRO at class-definition time, so
-hooks compose across mixins and base classes, firing in base-to-subclass order.
-`Repository` documents the events and what each passes.
+Hooks compose: stack `@on` for several events on one method, and hooks from
+mixins and base classes all fire, in base-to-subclass order. `Repository` lists
+every event and the arguments it passes.
 """
 
 from collections.abc import Callable
@@ -19,12 +21,12 @@ HookEvent = Literal["create", "update", "delete", "hydrate"]
 """The repository operation a hook attaches to."""
 
 HookMode = Literal["before", "build", "after"]
-"""When a hook runs: before/after the operation's core, or `build` (hydrate only) to construct the DTO."""  # noqa: E501
+"""When a hook runs: `before`/`after` the operation, or `build` (hydrate only) to construct the DTO."""  # noqa: E501
 
 type HookKey = tuple[HookEvent, HookMode]
 
 BUILD_HOOK: HookKey = ("hydrate", "build")
-"""The single-winner hook that constructs the DTO from a model (last-in-MRO wins)."""
+"""The hydrate `build` hook. Unlike before/after, only the most-derived one runs."""
 
 # before/after on every event, except hydrate/before (nothing precedes a read's DTO build);
 # build is hydrate-only (writes have no DTO to construct).
