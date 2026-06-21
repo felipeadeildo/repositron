@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, PendingRollbackError
 from sqlalchemy.orm import Session
 
-from repositron import UNSET
+from repositron import UNSET, Repository, writes
 
 
 def _fetch(session: Session, uid: int) -> User:
@@ -114,3 +114,60 @@ def test_flush_error_leaves_session_pending_when_disabled(session: Session):
     # no rollback happened: the session is stuck until the caller rolls back
     with pytest.raises(PendingRollbackError):
         session.scalar(select(User))
+
+
+# --- @writes -----------------------------------------------------------------
+
+
+class WriteRepo(Repository[User, User, UserCreate, UserUpdate]):
+    @writes
+    def add_named(self, name: str) -> int:
+        """Custom write WITHOUT a commit kwarg. Flushes itself to read the pk back."""
+        user = User(name=name)
+        self.session.add(user)
+        self.session.flush()  # the method flushes when it needs the assigned pk
+        return user.id
+
+    @writes
+    def add_named_committable(self, name: str, *, commit: bool | None = None) -> int:
+        """Declares `commit` so the per-call override type-checks; the wrapper consumes it."""
+        user = User(name=name)
+        self.session.add(user)
+        self.session.flush()
+        return user.id
+
+
+def test_writes_flushes_and_returns_value(session: Session):
+    repo = WriteRepo(session)
+    uid = repo.add_named("Ada")
+    assert isinstance(uid, int)  # pk assigned
+    assert session.scalar(select(User).where(User.name == "Ada")) is not None
+    session.rollback()  # not committed
+    assert session.scalar(select(User).where(User.name == "Ada")) is None
+
+
+def test_writes_honors_commit_kwarg(session: Session):
+    repo = WriteRepo(session)  # autocommit off
+    repo.add_named_committable("Forced", commit=True)
+    session.rollback()
+    assert session.scalar(select(User).where(User.name == "Forced")) is not None
+
+
+def test_writes_honors_autocommit(session: Session):
+    repo = WriteRepo(session, autocommit=True)
+    repo.add_named("Durable")  # no commit kwarg, but autocommit is on
+    session.rollback()
+    assert session.scalar(select(User).where(User.name == "Durable")) is not None
+
+
+def test_writes_rolls_back_on_error(session: Session):
+    class BoomRepo(Repository[User, User, UserCreate, UserUpdate]):
+        @writes
+        def bad(self) -> None:
+            self.session.add(User(name=None))  # NOT NULL violation at flush
+
+    repo = BoomRepo(session)
+    with pytest.raises(IntegrityError):
+        repo.bad()
+    # default rollback_on_error left the session usable
+    assert session.scalar(select(User)) is None
