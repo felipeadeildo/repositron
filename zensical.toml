@@ -32,6 +32,7 @@ site_url = "https://repositron.fa.dev.br"
 # Repository link, rendered next to the search bar.
 repo_url = "https://github.com/felipeadeildo/repositron"
 repo_name = "felipeadeildo/repositron"
+edit_uri = "edit/main/docs/"
 
 # The copyright notice appears in the page footer and can contain an HTML
 # fragment.
