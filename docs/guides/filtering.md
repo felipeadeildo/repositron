@@ -54,7 +54,7 @@ repo.list(extra_filters=[or_(User.name.ilike(q), User.email.ilike(q))])
 
 That last pattern, a free-text search across a couple of columns, is common
 enough that it is worth wrapping in a method on your repository so callers do not
-repeat it. See [custom methods](custom-methods.md#filter-builders) for that.
+repeat it. See [custom methods](custom-queries.md#filter-builders) for that.
 
 ## The two special filter values
 

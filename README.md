@@ -227,8 +227,32 @@ repo.create(payload)
 
 repo = ItemRepository(session)                     # flush-only (default)
 item_id = repo.create(payload, commit=True)        # but commit this one,
-deploy_site.delay(item_id)                          # so the worker process sees it
+worker.enqueue(item_id)                             # so the worker process sees it
 ```
+
+### Hooks: extend a write or a read without overriding
+
+Tag a method with `@on` and the base runs it inside its own `create` / `update` /
+`delete` / hydration. Set a derived column before the flush, or enrich the
+returned DTO with a value no column holds, no override, no `self.session`
+plumbing.
+
+```python
+from dataclasses import replace
+from repositron import Repository, on
+
+class ArticleRepository(Repository[Article, ArticleDTO, ArticleCreate, ArticleUpdate]):
+    @on("create", mode="before")
+    def stamp(self, model, payload):           # runs before the insert flushes
+        model.published_at = datetime.now(UTC)
+
+    @on("hydrate", mode="after")
+    def add_count(self, model, dto):           # enrich every read
+        return replace(dto, comment_count=self._count(model.id))
+```
+
+Hooks compose: stack `@on` to run one method on several events, or put a shared
+one (timestamps, audit) in a mixin and every repository inherits it.
 
 ## Three shapes of DTO
 

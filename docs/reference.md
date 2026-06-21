@@ -5,7 +5,7 @@ icon: lucide/book-marked
 # API reference
 
 Everything the package exposes, in one place. For task-oriented walkthroughs,
-start with the [recipes](recipes/index.md).
+start with the [guides](guides/index.md).
 
 ## Imports
 
@@ -16,6 +16,7 @@ from repositron import (
     PaginatedResult,       # the {items, total} container
     OrderBy,               # the order_by argument type
     UNSET, UnsetType,      # the partial-update sentinel and its type
+    on,                    # decorator: tag a method as a lifecycle hook
 )
 ```
 
@@ -32,7 +33,7 @@ accept. `PK` is the primary-key type, defaulting to `int`; declare it (last,
 after the others) when your key is a `str` or `uuid`. So `Repository[Account]`
 is a valid read/write repository returning `Account` with an `int` key, and you
 add the other parameters only as you need them. See
-[primary keys](recipes/primary-keys.md).
+[primary keys](guides/primary-keys.md).
 
 ## Class attributes
 
@@ -57,14 +58,14 @@ Available on both `ReadOnlyRepository` and `Repository`.
 :   Fetch one row by primary key, hydrated to the DTO. `None` if absent.
 
 `first(*, extra_filters=None, order_by=None, **filters) -> DTO | None`
-:   The first row matching the filters, or `None`. See [filtering](recipes/filtering.md).
+:   The first row matching the filters, or `None`. See [filtering](guides/filtering.md).
 
 `list(*, extra_filters=None, order_by=None, **filters) -> list[DTO]`
 :   All rows matching the filters, each hydrated to the DTO.
 
 `list_paginated(offset, limit=20, *, extra_filters=None, order_by, **filters) -> PaginatedResult[DTO]`
 :   A page plus the unpaginated total. `order_by` is **required**; omitting it
-    raises `ValueError`. See [pagination](recipes/pagination.md).
+    raises `ValueError`. See [pagination](guides/pagination.md).
 
 `count(*, extra_filters=None, **filters) -> int`
 :   Count of rows matching the filters.
@@ -74,7 +75,7 @@ Available on both `ReadOnlyRepository` and `Repository`.
 
 `repo[Shape]`
 :   A clone bound to `Shape` for the next call, triggering column projection when
-    `Shape` is a narrow dataclass. See [projection](recipes/projection.md).
+    `Shape` is a narrow dataclass. See [projection](guides/projection.md).
 
 ## Constructor
 
@@ -84,7 +85,7 @@ Available on both `ReadOnlyRepository` and `Repository`.
     transaction to you. `rollback_on_error` (`True` by default) rolls the session
     back before re-raising when a flush or commit fails; set it to `False` to
     leave that rollback to you. See
-    [transactions](recipes/updates.md#transactions).
+    [transactions](guides/updates.md#transactions).
 
 ## Write methods
 
@@ -100,16 +101,38 @@ call. On a commit failure the session is rolled back and the error re-raised.
 `update(id, payload, *, commit=None) -> bool`
 :   Partial-update from a dataclass payload and flush. `UNSET` fields are skipped;
     `None` is written as `NULL`. `False` if no row has that key. See
-    [updates](recipes/updates.md).
+    [updates](guides/updates.md).
 
 `delete(id, *, commit=None) -> bool`
 :   Delete by primary key and flush. `False` if no row has that key.
+
+## Lifecycle hooks
+
+Tag a method with `@on(event, mode=...)` to run it inside the base's
+`create` / `update` / `delete` / hydration. Collected once per class; an unknown
+event raises `TypeError` at import. See [hooks](guides/hooks.md).
+
+| `@on(event, mode)`   | receives        | returns  |
+| -------------------- | --------------- | -------- |
+| `"create", "before"` | `model, payload` | nothing |
+| `"create", "after"`  | `model`         | nothing  |
+| `"update", "before"` | `model, payload` | nothing |
+| `"update", "after"`  | `model`         | nothing  |
+| `"delete", "before"` | `model`         | nothing  |
+| `"delete", "after"`  | `model`         | nothing  |
+| `"hydrate", "after"` | `model, dto`    | the DTO  |
+
+`before` write hooks run before the flush; `after` run once the model has its
+primary key. `hydrate` hooks fire on every read that hydrates, but not on
+`repo[Shape]` projection.
 
 ## Hooks to override
 
 `_hydrate(self, model) -> DTO`
 :   Convert a model instance to the DTO. Override when the automatic conversion
-    cannot build your DTO. See [custom hydration](recipes/custom-methods.md#custom-hydration).
+    cannot build your DTO at all; to merely add a derived field, prefer a
+    [`hydrate` hook](guides/hooks.md#enriching-the-dto). See
+    [custom hydration](guides/custom-queries.md#custom-hydration).
 
 ## Filter values
 
@@ -136,10 +159,10 @@ The four ideas that explain every choice in the API.
 - **The session is the caller's.** repositron flushes and never closes the
   session, so transaction boundaries stay in your application code by default.
   Committing is opt-in, per instance (`autocommit=True`) or per write
-  (`commit=True`); see [transactions](recipes/updates.md#transactions).
+  (`commit=True`); see [transactions](guides/updates.md#transactions).
 - **One source of truth per field name.** A rename declared once in
   `field_mapping` applies to both hydration and projection.
 - **Ordering is never implicit.** `list` and `first` are unordered unless asked;
-  `list_paginated` refuses to run without one. See [pagination](recipes/pagination.md#why-order_by-is-required).
+  `list_paginated` refuses to run without one. See [pagination](guides/pagination.md#why-order_by-is-required).
 - **`UNSET` is one canonical singleton,** compared by identity, shared across the
   whole library. There is no per-project variant to get subtly wrong.

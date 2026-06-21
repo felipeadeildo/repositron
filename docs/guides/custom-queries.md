@@ -2,7 +2,7 @@
 icon: lucide/function-square
 ---
 
-# Custom methods
+# Custom queries
 
 The base class gives you CRUD. Real repositories grow past CRUD: a free-text
 search, a batch insert, a query that joins three tables to answer one question.
@@ -87,8 +87,12 @@ them off the flushed models:
 
 The automatic model-to-DTO conversion handles the common cases: a dataclass built
 by field name, a Pydantic model through `model_validate`, or the model returned
-as-is. When your DTO needs something the row alone cannot provide, for instance a
-value gathered from another table, override `_hydrate` and build the DTO yourself:
+as-is.
+
+If you only need to *add* a derived field to the built DTO, a [`hydrate`
+hook](hooks.md#enriching-the-dto) is the smaller move, it hands you the
+finished DTO to enrich. Override `_hydrate` when the automatic build cannot
+produce the DTO at all and you need to construct it yourself from scratch:
 
 ```python
 class UserRepository(Repository[User, UserProfile]):

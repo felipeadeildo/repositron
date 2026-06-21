@@ -2,12 +2,13 @@
 icon: lucide/chef-hat
 ---
 
-# Recipes
+# Guides
 
-The [Get started](../get-started.md) page gives you a working repository. These
-recipes go one capability at a time, each a self-contained read with examples
-drawn from the kind of code repositories grow into: services that page through
-results, tasks that batch-insert, queries that join across tables.
+New here? [Concepts](../concepts.md) defines the vocabulary and [Get
+started](../get-started.md) gives you a working repository. These guides then go
+one capability at a time, each a self-contained read with examples drawn from the
+kind of code repositories grow into: services that page through results, tasks
+that batch-insert, queries that join across tables.
 
 Read them in any order. Each opens with the problem it solves, so you can tell
 at a glance whether it is the one you need right now.
@@ -18,7 +19,7 @@ at a glance whether it is the one you need right now.
 
     ---
 
-    Type parameters, `field_mapping`, `pk_column`, and the hooks you can override.
+    Type parameters, `field_mapping`, `pk_column`, and where behavior plugs in.
     Start here to understand how the base is customized.
 
 -   :material-filter-variant:{ .lg .middle } __[Filtering](filtering.md)__
@@ -28,7 +29,7 @@ at a glance whether it is the one you need right now.
     Two ways to filter in a single call, and the special meaning of `None` and
     `UNSET` as filter values.
 
--   :material-null:{ .lg .middle } __[Updates & UNSET](updates.md)__
+-   :material-null:{ .lg .middle } __[Updating rows](updates.md)__
 
     ---
 
@@ -46,17 +47,25 @@ at a glance whether it is the one you need right now.
 
     `repo[Shape]` to select only the columns a narrow shape declares.
 
--   :material-shape:{ .lg .middle } __[Choosing a DTO](dtos.md)__
+-   :material-shape:{ .lg .middle } __[Return types](return-types.md)__
 
     ---
 
     Dataclass, model-as-DTO, or Pydantic, and when each fits.
 
--   :material-function-variant:{ .lg .middle } __[Custom methods](custom-methods.md)__
+-   :material-webhook:{ .lg .middle } __[Hooks](hooks.md)__
 
     ---
 
-    Domain queries, batch inserts, and overriding hydration on top of the base.
+    Add to a write or a read with `@on`, a derived column, an enriched DTO, an
+    audit row, without overriding anything.
+
+-   :material-function-variant:{ .lg .middle } __[Custom queries](custom-queries.md)__
+
+    ---
+
+    Domain queries and batch inserts, the raw-SQLAlchemy escape hatch for what
+    the base does not cover.
 
 -   :material-key:{ .lg .middle } __[Primary keys](primary-keys.md)__
 

@@ -1,0 +1,197 @@
+---
+icon: lucide/webhook
+---
+
+# Hooks
+
+Most repositories need to do a little something *around* a write or a read: set a
+timestamp, derive a column from the others, fill a DTO field that no single
+column backs, write an audit row. The instinct is to override `create` or
+`_hydrate` and do it there, but then you inherit the parts you did not want to
+touch, the `add` / `flush` / return-the-id work on a write, every other field on
+a DTO.
+
+Hooks are how you do this without overriding anything. You tag a method with
+`@on`, say *when* it runs, and the repository calls it at that point inside its
+own `create` / `update` / `delete` / [hydration](../concepts.md#hydration). You
+write only the part that is yours; repositron keeps doing the rest. This is the
+normal way to extend a repository, an override is the rare fallback at the end of
+this page.
+
+```python
+from datetime import UTC, datetime
+from repositron import Repository, on
+
+
+class ArticleRepository(Repository[Article, ArticleDTO, ArticleCreate, ArticleUpdate]):
+    @on("create", mode="before")
+    def stamp_published(self, model: Article, payload: ArticleCreate) -> None:
+        model.published_at = datetime.now(UTC)
+```
+
+That is the whole repository. `create` still builds the model from the payload,
+flushes, returns the new id, and commits if asked. Right before the flush, your
+hook runs and sets `published_at`. No `create` override, no `self.session`, no
+plumbing.
+
+## How it works
+
+`@on` does not call your method, it tags it, hanging a small `(event, mode)`
+marker on the function. When the class is defined, the base scans itself once,
+through [`__init_subclass__`](https://docs.python.org/3/reference/datamodel.html#object.__init_subclass__),
+collects every tagged method, and records which moment each belongs to. From
+then on, `create`, `update`, `delete`, and hydration call into that collection at
+the right point.
+
+Collecting at class-definition time means no per-call cost and nothing magic at
+runtime. It also means a typo fails loudly: `@on("craete", ...)` raises a
+`TypeError` the moment the module is imported, rather than quietly never running.
+
+## The events
+
+A hook attaches to an `event` and a `mode`. Each pair passes a fixed set of
+arguments, the model and, where it applies, the payload or the built DTO.
+
+| `@on(...)`           | runs                                       | receives         | returns |
+| -------------------- | ------------------------------------------ | ---------------- | ------- |
+| `"create", "before"` | after the model is built, before flush     | `model, payload` | nothing |
+| `"create", "after"`  | after flush, the model now has its key     | `model`          | nothing |
+| `"update", "before"` | after the payload is applied, before flush | `model, payload` | nothing |
+| `"update", "after"`  | after flush                                | `model`          | nothing |
+| `"delete", "before"` | before the row is deleted                  | `model`          | nothing |
+| `"delete", "after"`  | after flush                                | `model`          | nothing |
+| `"hydrate", "after"` | after the DTO is built, on every read      | `model, dto`     | the DTO |
+
+`before` runs while the row is still being shaped, the place to set a column or
+derive a default. `after` runs once the flush has assigned the primary key, which
+is when you can write related rows that point back to it:
+
+```python
+class OrderRepository(Repository[Order, OrderDTO, OrderCreate, OrderUpdate]):
+    @on("create", mode="after")
+    def log_creation(self, model: Order) -> None:
+        # model.id exists now, so the audit row can reference it
+        self.session.add(AuditEntry(order_id=model.id, action="created"))
+```
+
+That `after` hook shares the repository's transaction, so the audit row flushes
+and commits together with the order. (When you want a write to *not* commit yet,
+see [transactions](updates.md#transactions).)
+
+`before` hooks mutate the model in place; nothing is returned. A common use is
+normalizing input regardless of how the caller spelled it:
+
+```python
+class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
+    @on("create", mode="before")
+    @on("update", mode="before")
+    def normalize_email(self, model: User, payload) -> None:
+        if model.email:
+            model.email = model.email.strip().lower()
+```
+
+## Enriching the DTO
+
+`hydrate` is the read-side event, and it replaces the most common reason to
+override `_hydrate`: a [DTO](../concepts.md#dto) with a field that no single
+column backs, a count, an aggregate, a list gathered from a related table.
+
+A `hydrate` hook receives the DTO repositron already built, every column field
+filled in and correctly typed, and returns one. With a frozen dataclass,
+[`dataclasses.replace`](https://docs.python.org/3/library/dataclasses.html#dataclasses.replace)
+adds the one field you care about and leaves the rest untouched:
+
+```python
+from dataclasses import replace
+from sqlalchemy import func, select
+from repositron import Repository, on
+
+
+class ArticleRepository(Repository[Article, ArticleDTO]):
+    @on("hydrate", mode="after")
+    def add_comment_count(self, model: Article, dto: ArticleDTO) -> ArticleDTO:
+        count = self.session.scalar(
+            select(func.count()).where(Comment.article_id == model.id)
+        )
+        return replace(dto, comment_count=count or 0)
+```
+
+Overriding `_hydrate` for this would mean restating every field of `ArticleDTO`
+just to add `comment_count`. The hook adds the derived field and nothing else,
+the base's typed construction does the rest. It runs on every read that
+hydrates, `get`, `first`, `list`, `list_paginated`, so the field is always
+present.
+
+Hooks chain, so several `hydrate` hooks each enrich the DTO in turn:
+
+```python
+class ArticleRepository(Repository[Article, ArticleDTO]):
+    @on("hydrate", mode="after")
+    def add_comment_count(self, model: Article, dto: ArticleDTO) -> ArticleDTO:
+        return replace(dto, comment_count=self._count_comments(model.id))
+
+    @on("hydrate", mode="after")
+    def add_tags(self, model: Article, dto: ArticleDTO) -> ArticleDTO:
+        return replace(dto, tags=self._load_tags(model.id))
+```
+
+!!! note "Projection skips hydrate hooks"
+    `repo[Shape]` reads only the columns `Shape` declares and builds it directly
+    (see [projecting columns](projection.md)), it never hydrates a full model. A
+    `hydrate` hook therefore does not fire for a projected shape, which is what
+    you want: a narrow shape has nowhere to put the derived field.
+
+## Sharing hooks across repositories
+
+More than one method can answer the same event, they all run, base classes
+before subclasses. This is what makes a hook worth more than an override: a
+concern that cuts across tables lives in a mixin once, and every repository that
+inherits it gets the behavior, with no `super()` call to remember.
+
+```python
+class TimestampedMixin:
+    @on("create", mode="before")
+    def set_created_at(self, model, payload) -> None:
+        model.created_at = datetime.now(UTC)
+
+    @on("update", mode="before")
+    def set_updated_at(self, model, payload) -> None:
+        model.updated_at = datetime.now(UTC)
+
+
+class UserRepository(TimestampedMixin, Repository[User, UserDTO, UserCreate, UserUpdate]):
+    pass        # every write is timestamped, with no override anywhere
+
+
+class ArticleRepository(TimestampedMixin, Repository[Article, ArticleDTO, ...]):
+    pass        # and so is this one
+```
+
+A single method can also serve several events, stack `@on`. One audit method for
+create, update, and delete:
+
+```python
+class DocumentRepository(Repository[Document, DocumentDTO, DocumentCreate, DocumentUpdate]):
+    @on("create", mode="after")
+    @on("update", mode="after")
+    @on("delete", mode="after")
+    def audit(self, model: Document) -> None:
+        self.session.add(AuditEntry(document_id=model.id))
+```
+
+## When you still override
+
+The line is "adding" versus "replacing", and almost everything is adding. A hook
+covers it whenever you layer behavior onto what the base already does, a derived
+column, an enriched DTO field, an audit row, a timestamp. You should rarely write
+a `create` or `update` override again.
+
+Overriding is left for the two cases where you are *replacing* the base, not
+adding to it:
+
+- A fundamentally different write, an `INSERT ... ON CONFLICT DO UPDATE`, say,
+  where the base's plain insert is the wrong statement. Write the method yourself
+  with `self.session`; see [custom methods](custom-queries.md).
+- A DTO the automatic build cannot produce at all, not just one field short.
+  Override [`_hydrate`](custom-queries.md#custom-hydration). If you only need to
+  add a field, that is a `hydrate` hook, not an override.

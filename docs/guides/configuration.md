@@ -5,8 +5,8 @@ icon: lucide/sliders-horizontal
 # Configuration
 
 A repository is configured in three places: the **type parameters** it inherits
-with, the **class attributes** it sets, and the **hooks** it overrides. This page
-is the full map of what you can change and how each piece behaves. Most
+with, the **class attributes** it sets, and the **hooks** it declares with `@on`.
+This page is the full map of what you can change and how each piece behaves. Most
 repositories touch only the first two.
 
 ## The one idea: convention first, configuration only when you diverge
@@ -45,7 +45,7 @@ model:
 - the DTO should carry fewer columns than the model? just leave them out, and the
   extra columns are simply not read into it
 - the DTO needs a value the row alone cannot give (a join, a computed field)?
-  override `_hydrate`
+  add it with a [`hydrate` hook](hooks.md#enriching-the-dto)
 - the primary key is not called `id`? set `pk_column`
 
 So the beauty is the gradient: the zero-config path covers most tables, and every
@@ -171,21 +171,22 @@ repo.list_paginated(0, 20, order_by=repo.ORDER)
 in. But it is the idiomatic place to keep "the way this table is normally
 sorted", so it is worth adopting.
 
-## Hooks: overriding behavior
+## Adding behavior: hooks
 
-When configuration is not enough because the logic itself is custom, override a
-method. The one you reach for most is `_hydrate`, the model-to-DTO conversion:
+When configuration is not enough because there is logic to run, a write that
+needs a derived column, a DTO that needs an extra field, you add it with a
+[hook](hooks.md), not an override. Tag a method with `@on` and the base runs it
+inside its own `create` / `update` / `delete` / hydration:
 
 ```python
 class UserRepository(Repository[User, UserProfile]):
-    def _hydrate(self, model: User) -> UserProfile:
-        # build a DTO the automatic path cannot, e.g. joining another table
-        ...
+    @on("hydrate", mode="after")
+    def with_roles(self, model: User, dto: UserProfile) -> UserProfile:
+        return replace(dto, roles=self._load_roles(model.id))
 ```
 
-Once overridden, it runs for every read on that repository. The full treatment,
-including when you need it and how it interacts with projection, is in
-[custom methods](custom-methods.md#custom-hydration).
+Overriding `_hydrate` is the rarer fallback, only when the automatic build cannot
+produce the DTO at all. [Hooks](hooks.md) covers both, and where the line falls.
 
 ## The short version
 
@@ -195,4 +196,5 @@ including when you need it and how it interacts with projection, is in
 | a field whose name differs from the column | add it to `field_mapping`           |
 | the primary-key column name           | set `pk_column`                          |
 | the default sort for callers          | set a class attribute like `ORDER`       |
-| how a model becomes a DTO             | override `_hydrate`                      |
+| add a derived field, column, or side effect | a [hook](hooks.md) with `@on`     |
+| build a DTO the automatic path can't  | override `_hydrate`                      |

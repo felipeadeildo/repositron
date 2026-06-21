@@ -2,7 +2,7 @@
 icon: lucide/shapes
 ---
 
-# Choosing a DTO
+# Return types
 
 The DTO is the shape your reads return. repositron supports three kinds, and the
 right choice is usually obvious once you know what each costs. The rule of thumb:
@@ -102,6 +102,7 @@ it in.
 | work with full ORM rows inside a transaction        | model as DTO   |
 | reuse an existing Pydantic response schema          | Pydantic       |
 
-When the automatic conversion cannot build your DTO, for instance because it
-needs data from another table, you override hydration yourself. That is covered
-in [custom methods](custom-methods.md#custom-hydration).
+When a DTO needs a value the row alone cannot give, for instance data from
+another table, add it with a [`hydrate` hook](hooks.md#enriching-the-dto). The
+rarer case, a DTO the automatic build cannot produce at all, is an `_hydrate`
+override, covered in [custom methods](custom-queries.md#custom-hydration).

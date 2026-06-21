@@ -145,7 +145,7 @@ the next call, **clone-and-cast**: `copy.copy(self)` plus a `cast` to
 and build the narrow object); the type checker gets the cast (so the return type
 is `Shape`, not the full DTO). The two needs that couldn't be met by one
 mechanism are split across the two worlds that can each serve one of them. The
-[projection recipe](recipes/projection.md) covers it from the user's side.
+[projection recipe](guides/projection.md) covers it from the user's side.
 
 It is a small amount of extra code, and it buys the signature we wanted all
 along: `repo[UserCard].first(...) -> UserCard | None`. The alternatives we

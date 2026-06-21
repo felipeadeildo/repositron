@@ -5,7 +5,7 @@ icon: lucide/rocket
 # Get started
 
 This page takes you from an empty file to a working, fully typed repository.
-Read it once, start to finish. After that, the [recipes](recipes/index.md) cover
+Read it once, start to finish. After that, the [guides](guides/index.md) cover
 each capability in depth.
 
 ## Install
@@ -99,7 +99,7 @@ class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
 That is the entire class. Its body is a single attribute, and that attribute is
 the only line you would have to change if the column were renamed tomorrow.
 `field_mapping`, the type parameters, and the other knobs all get a proper
-treatment in [Configuration](recipes/configuration.md).
+treatment in [Configuration](guides/configuration.md).
 
 ## Use it
 
@@ -126,65 +126,12 @@ serializes, so there is no second schema to keep in step.
     `flush`, leaving when to commit and roll back to your application. When you
     do want a write committed, opt in with `Repository(session, autocommit=True)`
     or per call with `repo.create(payload, commit=True)`; see
-    [transactions](recipes/updates.md#transactions). One repository instance holds
+    [transactions](guides/updates.md#transactions). One repository instance holds
     no per-call state, so it is safe to build once and inject everywhere. This
     boundary is one of the [design principles](reference.md#design-principles).
 
 ## Where to go next
 
-You now have a working repository. The interesting parts are how it filters,
-how it updates, and how it returns exactly the shape you ask for. Each has its
-own recipe:
-
-<div class="grid cards" markdown>
-
--   :material-tune:{ .lg .middle } __[Configuration](recipes/configuration.md)__
-
-    ---
-
-    How `field_mapping` works in both directions, the type-parameter defaults,
-    `pk_column`, and the hooks you can override.
-
--   :material-filter-variant:{ .lg .middle } __[Filtering](recipes/filtering.md)__
-
-    ---
-
-    Equality by keyword and arbitrary SQLAlchemy expressions, combined in one
-    call. Plus the two filter values that mean something special.
-
--   :material-null:{ .lg .middle } __[Updates & UNSET](recipes/updates.md)__
-
-    ---
-
-    The difference between "leave this alone" and "set this to NULL", and why the
-    usual partial-update pattern cannot express it.
-
--   :material-book-open-page-variant:{ .lg .middle } __[Pagination](recipes/pagination.md)__
-
-    ---
-
-    A page plus its total, and why repositron refuses to paginate without an
-    order.
-
--   :material-table-column:{ .lg .middle } __[Projection](recipes/projection.md)__
-
-    ---
-
-    Load only the columns a narrow shape needs, for one call, without touching
-    the injected repository.
-
--   :material-shape:{ .lg .middle } __[Choosing a DTO](recipes/dtos.md)__
-
-    ---
-
-    Dataclass, the model itself, or a Pydantic schema you already have.
-    repositron does the right thing for each.
-
--   :material-function-variant:{ .lg .middle } __[Custom methods](recipes/custom-methods.md)__
-
-    ---
-
-    The base gives you CRUD. Domain queries, batch inserts, and custom hydration
-    are yours to add on top.
-
-</div>
+You now have a working repository. From here, the [Guides](guides/index.md) take
+each capability one at a time, filtering, updating, pagination, projection,
+return types, hooks, and the escape hatch for custom queries.

@@ -13,7 +13,7 @@ Full CRUD, with <strong>zero per-table boilerplate</strong>.
 </p>
 
 [Get started](get-started.md){ .md-button .md-button--primary }
-[Recipes](recipes/index.md){ .md-button }
+[Guides](guides/index.md){ .md-button }
 
 ---
 
@@ -97,7 +97,7 @@ types it against your model and your return shape.
     Equality by keyword and arbitrary SQLAlchemy expressions, combined. You never
     pick between readable and powerful.
 
-    [:octicons-arrow-right-24: Filtering](recipes/filtering.md)
+    [:octicons-arrow-right-24: Filtering](guides/filtering.md)
 
 -   :material-null:{ .lg .middle } __Updates that write NULL on purpose__
 
@@ -106,7 +106,7 @@ types it against your model and your return shape.
     `UNSET` leaves a column alone; `None` sets it to `NULL`. The `is not None`
     pattern cannot tell those apart. repositron can.
 
-    [:octicons-arrow-right-24: Updates & UNSET](recipes/updates.md)
+    [:octicons-arrow-right-24: Updating rows](guides/updates.md)
 
 -   :material-table-column:{ .lg .middle } __Load only what you need__
 
@@ -115,7 +115,7 @@ types it against your model and your return shape.
     `repo[Card].list()` selects just that shape's columns, for one call, without
     touching the injected repository.
 
-    [:octicons-arrow-right-24: Projection](recipes/projection.md)
+    [:octicons-arrow-right-24: Projection](guides/projection.md)
 
 -   :material-book-open-page-variant:{ .lg .middle } __Pagination that refuses to lie__
 
@@ -124,7 +124,7 @@ types it against your model and your return shape.
     `list_paginated` requires `order_by` and raises if you forget, turning a
     production heisenbug into an error at the call site.
 
-    [:octicons-arrow-right-24: Pagination](recipes/pagination.md)
+    [:octicons-arrow-right-24: Pagination](guides/pagination.md)
 
 -   :material-feather:{ .lg .middle } __One dependency__
 

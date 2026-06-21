@@ -48,17 +48,21 @@ copyright = "Copyright &copy; 2026 Felipe Adeildo"
 # Read more: https://zensical.org/docs/setup/navigation/
 nav = [
   { "Home" = "index.md" },
-  { "Get started" = "get-started.md" },
-  { "Recipes" = [
-    "recipes/index.md",
-    { "Configuration" = "recipes/configuration.md" },
-    { "Filtering" = "recipes/filtering.md" },
-    { "Updates & UNSET" = "recipes/updates.md" },
-    { "Pagination" = "recipes/pagination.md" },
-    { "Projection" = "recipes/projection.md" },
-    { "Choosing a DTO" = "recipes/dtos.md" },
-    { "Custom methods" = "recipes/custom-methods.md" },
-    { "Primary keys" = "recipes/primary-keys.md" },
+  { "Introduction" = [
+    { "Concepts" = "concepts.md" },
+    { "Get started" = "get-started.md" },
+  ] },
+  { "Guides" = [
+    "guides/index.md",
+    { "Configuration" = "guides/configuration.md" },
+    { "Filtering" = "guides/filtering.md" },
+    { "Updating rows" = "guides/updates.md" },
+    { "Pagination" = "guides/pagination.md" },
+    { "Projection" = "guides/projection.md" },
+    { "Return types" = "guides/return-types.md" },
+    { "Hooks" = "guides/hooks.md" },
+    { "Custom queries" = "guides/custom-queries.md" },
+    { "Primary keys" = "guides/primary-keys.md" },
   ] },
   { "API reference" = "reference.md" },
   { "Limitations & design notes" = "limitations.md" },
