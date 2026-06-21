@@ -1,8 +1,8 @@
 ---
-icon: lucide/triangle-alert
+icon: lucide/key-round
 ---
 
-# Limitations & design notes
+# Typed primary keys
 
 One question comes up often enough to deserve its own page: **why must I declare
 the key type as `PKT` when I already told the repository which column the key is?**
@@ -42,7 +42,7 @@ pull a member's type out. That is the exact tool we would want: "the type of the
 column named by `pk_column`". Python has no equivalent.
 
 <figure markdown="span">
-![Limited by the technology of our time](images/limited-by-technology.webp){ width="520" }
+![Limited by the technology of our time](../images/limited-by-technology.webp){ width="520" }
 <figcaption>The honest summary of typed primary-key inference in Python today.</figcaption>
 </figure>
 
@@ -145,7 +145,7 @@ the next call, **clone-and-cast**: `copy.copy(self)` plus a `cast` to
 and build the narrow object); the type checker gets the cast (so the return type
 is `Shape`, not the full DTO). The two needs that couldn't be met by one
 mechanism are split across the two worlds that can each serve one of them. The
-[projection recipe](guides/projection.md) covers it from the user's side.
+[projection recipe](../guides/projection.md) covers it from the user's side.
 
 It is a small amount of extra code, and it buys the signature we wanted all
 along: `repo[UserCard].first(...) -> UserCard | None`. The alternatives we

@@ -66,7 +66,11 @@ nav = [
     { "Primary keys" = "guides/primary-keys.md" },
   ] },
   { "API reference" = "reference.md" },
-  { "Limitations & design notes" = "limitations.md" },
+  { "Design notes" = [
+    "design-notes/index.md",
+    { "Inspirations" = "design-notes/inspirations.md" },
+    { "Typed primary keys" = "design-notes/typed-keys.md" },
+  ] },
 ]
 
 # With the "extra_css" option you can add your own CSS styling to customize

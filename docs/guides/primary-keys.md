@@ -74,8 +74,8 @@ repo.get(uuid.uuid4())   # TokenDTO | None
     You might expect `pk_column = Account.account_id` to tell the checker the key
     is a `str` on its own. It cannot: Python has no way to read the type of a
     class attribute back into a generic parameter. The honest, checkable place to
-    state it is the type parameter. The [limitations](../limitations.md) page
-    explains the machinery, and why `int` is the default.
+    state it is the type parameter. The [typed primary keys](../design-notes/typed-keys.md)
+    design note explains the machinery, and why `int` is the default.
 
 ### The slots are positional
 
