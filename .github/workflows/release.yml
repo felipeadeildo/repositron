@@ -10,8 +10,13 @@ permissions:
   id-token: write # trusted publishing (OIDC) — no PyPI token needed
 
 jobs:
+  test:
+    name: Test
+    uses: ./.github/workflows/test.yml
+
   build-and-publish:
     name: Build and publish to PyPI
+    needs: test # publish only if lint, types, and tests pass
     runs-on: ubuntu-latest
     environment: pypi
 

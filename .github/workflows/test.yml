@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call: # let the release workflow gate publishing on this passing
 
 jobs:
   test:
