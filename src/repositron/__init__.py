@@ -14,7 +14,7 @@ projection, and model-to-DTO hydration, without per-table CRUD boilerplate.
 from repositron.base import OrderBy, PaginatedResult
 from repositron.hooks import on
 from repositron.sentinel import UNSET, UnsetType
-from repositron.sql import ReadOnlyRepository, Repository
+from repositron.sql import ReadOnlyRepository, Repository, writes
 
 __all__ = [
     "UNSET",
@@ -24,4 +24,5 @@ __all__ = [
     "Repository",
     "UnsetType",
     "on",
+    "writes",
 ]

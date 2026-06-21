@@ -7,10 +7,11 @@ column projection via `repo[DTO]`, and the equality/expression filter split.
 """
 
 import copy
+import functools
 from collections.abc import Callable, Iterator
 from dataclasses import fields, is_dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, ClassVar, cast, get_args, get_origin
+from typing import TYPE_CHECKING, ClassVar, Concatenate, cast, get_args, get_origin
 
 from sqlalchemy.orm import InstrumentedAttribute, Query, Session
 from sqlalchemy.sql.elements import ColumnElement
@@ -201,16 +202,14 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
     @on("hydrate", mode="build")
     def _hydrate(self, model: ModelT) -> DTOT:
         """
-        Convert a model instance to the active DTO. The default `build` hook.
+        Build the DTO from a model. The default works for a Pydantic or dataclass
+        DTO (and the model itself), honoring `field_mapping` for renames.
 
-        When the DTO is the model class the instance is returned unchanged. A
-        Pydantic DTO goes through `model_validate`, a dataclass DTO is built by
-        field name; both honor `field_mapping` for renames.
+        Customize it when your DTO is none of those, e.g. a bare `str`. Either
+        override this method, or tag your own with `@on("hydrate", mode="build")`:
 
-        Two ways to customize the build, both resolved as the `build` hook
-        (most-derived wins): override `_hydrate` directly, or tag another method
-        with `@on("hydrate", mode="build")`. The latter suits a non-DTO result
-        the automatic path can't construct, e.g. a bare `str`.
+            def _hydrate(self, model) -> str:
+                return str(model.image)
         """
         dto = self._dto
         if dto is self.model_class:
@@ -241,27 +240,15 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
 
     @cached_property
     def _build_hook(self) -> Callable[[ModelT], DTOT]:
-        """
-        The bound `build` hook (most-derived wins). Falls back to `_hydrate` for the
-        (unusual) base class, which skips `__init_subclass__` and so registers no hooks.
-        """
+        # The build hook, or _hydrate directly when the base is used unsubclassed.
         return next(self._hooks_for("hydrate", "build"), self._hydrate)
 
     @cached_property
     def _after_hooks(self) -> _list[Callable[[ModelT, DTOT], DTOT]]:
-        """The bound `hydrate`/`after` hooks, resolved once for the instance's lifetime."""
         return list(self._hooks_for("hydrate", "after"))
 
     def _hydrate_one(self, model: ModelT) -> DTOT:
-        """
-        Hydrate `model` to the DTO via the `build` hook, then fold `after` hooks over it.
-
-        The `build` hook (most-derived wins; the base default is `_hydrate`)
-        constructs the DTO from the model. Each `after` hook then receives
-        `(model, dto)` and returns a possibly enriched DTO, so they chain like a
-        pipeline. Projection (`repo[Shape]`) bypasses both, so hooks do not fire
-        there.
-        """
+        # Build the DTO, then let each after-hook enrich it. Projection bypasses this.
         dto = self._build_hook(model)
         for hook in self._after_hooks:
             dto = cast("DTOT", hook(model, dto))
@@ -417,6 +404,48 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         return self.session.query(self._pk_col).filter(self._pk_col == id).first() is not None
 
 
+def writes[T: "Repository", **P, R](
+    method: Callable[Concatenate[T, P], R],
+) -> Callable[Concatenate[T, P], R]:
+    """
+    Give a custom write method the same flush/commit/rollback as the built-ins.
+
+    The body only does the session work:
+
+    ```python
+    @writes
+    def archive(self, id: int) -> None:
+        self.session.add(...)  # flushed for you; rolled back on error
+    ```
+
+    Commit follows the usual rules: a flush, plus a commit if the repo is
+    `autocommit=True`. Declare `*, commit: bool | None = None` to also let
+    callers override per call (`repo.upsert(p, commit=True)`); the wrapper
+    consumes it, so the body never has to handle it.
+
+    ```python
+    @writes
+    def upsert(self, payload, *, commit: bool | None = None) -> None:
+        self.session.execute(...)
+    ```
+    """
+
+    @functools.wraps(method)
+    def wrapper(self: T, *args: P.args, **kwargs: P.kwargs) -> R:
+        commit = cast("bool | None", kwargs.pop("commit", None))
+
+        def op() -> R:
+            result = method(self, *args, **kwargs)
+            self.session.flush()
+            return result
+
+        result = self._run(op)
+        self._commit(commit)
+        return result
+
+    return wrapper
+
+
 class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT = int](
     ReadOnlyRepository[ModelT, DTOT, PKT], CRUDRepositoryABC[ModelT, DTOT, CreateT, UpdateT, PKT]
 ):
@@ -432,8 +461,8 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
             field_mapping = {"full_name": "name"}
 
     Methods tagged with `@on` run inside the matching operation. Each event
-    passes a fixed set of arguments; an `after`-hydrate hook returns the DTO,
-    the rest return nothing:
+    passes a fixed set of arguments; `hydrate` hooks return the DTO, the rest
+    return nothing:
 
         ("create", "before")    (model, payload)   before the insert flushes
         ("create", "after")     (model)            after flush, key assigned
@@ -441,7 +470,11 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
         ("update", "after")     (model)            after flush
         ("delete", "before")    (model)            before the row is deleted
         ("delete", "after")     (model)            after flush
-        ("hydrate", "after")    (model, dto)       on every read; returns the DTO
+        ("hydrate", "build")    (model)            builds the DTO (replaces the default)
+        ("hydrate", "after")    (model, dto)       enriches the built DTO, on every read
+
+    For a custom write method that isn't a plain create/update/delete, wrap it
+    with `@writes` to get the same flush/commit/rollback.
     """
 
     def __init__(
@@ -472,9 +505,10 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
         if commit if commit is not None else self.autocommit:
             self._run(self.session.commit)
 
-    def _run(self, op: Callable[[], None]) -> None:
+    def _run[R](self, op: Callable[[], R]) -> R:
+        """Run `op`, rolling back on error when `rollback_on_error` is set, and return its result."""  # noqa: E501
         try:
-            op()
+            return op()
         except Exception:
             if self.rollback_on_error:
                 self.session.rollback()
