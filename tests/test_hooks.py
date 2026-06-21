@@ -123,6 +123,63 @@ def test_stacked_on_runs_for_each_event(session: Session):
     assert fired == [uid, uid]
 
 
+def test_build_hook_constructs_non_dto_result(session: Session):
+    class Repo(Repository[User, str]):
+        @on("hydrate", mode="build")
+        def as_name(self, model) -> str:
+            return f"<{model.name}>"
+
+    repo = Repo(session)
+    user = User(name="Ada")
+    session.add(user)
+    session.flush()
+    assert repo.get(user.id) == "<Ada>"
+    assert repo.list() == ["<Ada>"]
+
+
+def test_build_hook_overrides_default(session: Session):
+    class Repo(Repository[User, UserTagged]):
+        @on("hydrate", mode="build")
+        def build(self, model) -> UserTagged:
+            return UserTagged(id=model.id, name="forced", tag="b")
+
+    user = User(name="Ada")
+    session.add(user)
+    session.flush()
+    got = Repo(session).get(user.id)
+    assert got == UserTagged(id=user.id, name="forced", tag="b")
+
+
+def test_build_then_after_compose(session: Session):
+    # build constructs, after enriches: both fire, in that order.
+    class Repo(Repository[User, UserTagged]):
+        @on("hydrate", mode="build")
+        def build(self, model) -> UserTagged:
+            return UserTagged(id=model.id, name=model.name)
+
+        @on("hydrate", mode="after")
+        def enrich(self, model, dto):
+            return replace(dto, tag=f"t{model.id}")
+
+    user = User(name="Ada")
+    session.add(user)
+    session.flush()
+    got = Repo(session).get(user.id)
+    assert got == UserTagged(id=user.id, name="Ada", tag=f"t{user.id}")
+
+
+def test_hydrate_override_still_wins_as_build(session: Session):
+    # Classic override path: defining _hydrate still wins (most-derived build).
+    class Repo(Repository[User, str]):
+        def _hydrate(self, model) -> str:
+            return f"!{model.name}"
+
+    user = User(name="Ada")
+    session.add(user)
+    session.flush()
+    assert Repo(session).get(user.id) == "!Ada"
+
+
 def test_unknown_hook_raises_at_class_definition():
     with pytest.raises(TypeError, match="unknown hook"):
 
