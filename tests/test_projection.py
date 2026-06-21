@@ -76,3 +76,32 @@ def test_non_dataclass_dto_does_not_project(
     ModelRepo(session).list(order_by=User.id)
     cols = _select_columns(sql_log)
     assert "email" in cols  # model-as-DTO: no projection, whole row
+
+
+def test_default_dataclass_dto_with_derived_field_hydrates(
+    session: Session, seed_users: list[User]
+):
+    # A default DTO may carry a field no column backs, populated in _hydrate. Reads
+    # without repo[Shape] must hydrate, not project (which would fail on that field).
+    from dataclasses import dataclass, field
+
+    from repositron import Repository
+
+    @dataclass
+    class UserWithRoles:
+        id: int
+        name: str
+        roles: list[str] = field(default_factory=list)  # derived, not a column
+
+    class RoleRepo(Repository[User, UserWithRoles]):
+        def _hydrate(self, model: User) -> UserWithRoles:
+            return UserWithRoles(id=model.id, name=model.name, roles=["admin"])
+
+    repo = RoleRepo(session)
+    assert repo.list(order_by=User.id)[0].roles == ["admin"]
+
+    first = repo.first(order_by=User.id)
+    assert first is not None and first.roles == ["admin"]
+
+    got = repo.get(seed_users[0].id)
+    assert got is not None and got.roles == ["admin"]

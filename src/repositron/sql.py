@@ -260,11 +260,17 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         return self._apply_order(target, order_by=order_by)
 
     def _projecting(self) -> type | None:
-        """The active DTO if it warrants column projection (a non-model dataclass), else None."""
-        dto = self._dto
-        if dto is self.model_class:
+        """
+        The shape to column-project, or None to hydrate the full DTO instead.
+
+        Projection narrows the SELECT to a shape's fields, so it only applies to a
+        shape bound for the call via `repo[Shape]`. The default DTO always hydrates,
+        which lets it carry fields no column backs (those `_hydrate` derives).
+        """
+        shape = self._active_dto
+        if shape is None or shape is self.model_class:
             return None
-        return dto if is_dataclass(dto) else None
+        return shape if is_dataclass(shape) else None
 
     def get(self, id: PKT) -> DTOT | None:
         """Fetch one record by primary key, hydrated to the active DTO."""
