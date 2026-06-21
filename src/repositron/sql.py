@@ -274,12 +274,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
 
     def get(self, id: PKT) -> DTOT | None:
         """Fetch one record by primary key, as the active DTO, or None if absent."""
-        dto = self._projecting()
-        if dto is not None:
-            row = self._project(dto, extra_filters=[self._pk_col == id], order_by=None).first()
-            return cast("DTOT", dto(*row)) if row is not None else None
-        model = self._select(extra_filters=[self._pk_col == id]).first()
-        return self._hydrate(model) if model is not None else None
+        return self.first(extra_filters=[self._pk_col == id])
 
     def first(
         self,
