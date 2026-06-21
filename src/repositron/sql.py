@@ -7,7 +7,7 @@ column projection via `repo[DTO]`, and the equality/expression filter split.
 """
 
 import copy
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import fields, is_dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, get_origin
@@ -22,6 +22,7 @@ from repositron.base import (
     PaginatedResult,
     ReadOnlyRepositoryABC,
 )
+from repositron.hooks import HookEvent, HookMode, HookRegistry, collect_hooks
 from repositron.sentinel import UnsetType
 
 if TYPE_CHECKING:
@@ -70,6 +71,24 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         self.session = session
         self._active_dto: type | None = None
         """DTO bound via `__getitem__` (call-site override); None uses the class default."""
+
+    _hooks: ClassVar[HookRegistry] = {}
+    """Hooks declared with `@on`, collected per subclass; see `__init_subclass__`."""
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        # Collect @on-tagged methods once, at class definition, across the MRO.
+        super().__init_subclass__(**kwargs)
+        cls._hooks = collect_hooks(cls)
+
+    def _hooks_for(self, event: HookEvent, mode: HookMode) -> Iterator[Callable]:
+        """Yield the bound hook methods for `event`/`mode`, in registration order."""
+        for name in self._hooks.get((event, mode), ()):
+            yield getattr(self, name)
+
+    def _emit(self, event: HookEvent, mode: HookMode, *args: object) -> None:
+        """Run each hook for `event`/`mode` as a side effect, ignoring returns."""
+        for hook in self._hooks_for(event, mode):
+            hook(*args)
 
     @classmethod
     def _extract_type_arg(cls, index: int) -> type | None:
@@ -215,6 +234,20 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
                 f"Override _hydrate() in your repository subclass. Error: {e}"
             ) from e
 
+    def _hydrate_one(self, model: ModelT) -> DTOT:
+        """
+        Hydrate `model` to the DTO, folding the `hydrate`/`after` hooks over the result.
+
+        Each hook receives `(model, dto)` and returns a (possibly enriched) DTO,
+        so they chain like a pipeline. Reads go through here; `_hydrate` stays the
+        override point for the build itself. Projection (`repo[Shape]`) bypasses
+        both, so hooks do not fire there.
+        """
+        dto = self._hydrate(model)
+        for hook in self._hooks_for("hydrate", "after"):
+            dto = cast("DTOT", hook(model, dto))
+        return dto
+
     def _apply_filters(
         self,
         query: Query,
@@ -293,7 +326,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         model = self._select(extra_filters=extra_filters, order_by=order_by, **filters).first()
         if model is None:
             return None
-        return self._hydrate(model)
+        return self._hydrate_one(model)
 
     def list(
         self,
@@ -311,7 +344,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
             # Rows come back in the DTO's field order (see _project_columns); build positionally.
             return cast("_list[DTOT]", [dto(*row) for row in rows])
         models = self._select(extra_filters=extra_filters, order_by=order_by, **filters).all()
-        return [self._hydrate(m) for m in models]
+        return [self._hydrate_one(m) for m in models]
 
     def list_paginated(
         self,
@@ -347,7 +380,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         query = self._select(extra_filters=extra_filters, order_by=order_by, **filters)
         total = query.order_by(None).count()
         models = query.offset(offset).limit(limit).all()
-        return PaginatedResult(items=[self._hydrate(m) for m in models], total=total)
+        return PaginatedResult(items=[self._hydrate_one(m) for m in models], total=total)
 
     def count(
         self,
@@ -376,12 +409,20 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
     to commit too. `CreateT`/`UpdateT` are the payload dataclasses; `UNSET`
     fields are skipped on write.
 
-    Example:
-        class TargetRepository(
-            Repository[Target, TargetDTO, TargetCreate, TargetUpdate]
-        ):
-            field_mapping = {"mention_rank": "rank"}
+        class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
+            field_mapping = {"full_name": "name"}
 
+    Methods tagged with `@on` run inside the matching operation. Each event
+    passes a fixed set of arguments; an `after`-hydrate hook returns the DTO,
+    the rest return nothing:
+
+        ("create", "before")    (model, payload)   before the insert flushes
+        ("create", "after")     (model)            after flush, key assigned
+        ("update", "before")    (model, payload)   after the payload is applied
+        ("update", "after")     (model)            after flush
+        ("delete", "before")    (model)            before the row is deleted
+        ("delete", "after")     (model)            after flush
+        ("hydrate", "after")    (model, dto)       on every read; returns the DTO
     """
 
     def __init__(
@@ -438,8 +479,10 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
             and not isinstance(getattr(payload, f.name), UnsetType)
         }
         model = self.model_class(**kwargs)
+        self._emit("create", "before", model, payload)
         self.session.add(model)
         self._flush()
+        self._emit("create", "after", model)
         pk = getattr(model, self._pk_col.key)
         self._commit(commit)
         return pk
@@ -462,7 +505,9 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
             value = getattr(payload, f.name)
             if not isinstance(value, UnsetType) and hasattr(model, f.name):
                 setattr(model, f.name, value)
+        self._emit("update", "before", model, payload)
         self._flush()
+        self._emit("update", "after", model)
         self._commit(commit)
         return True
 
@@ -478,7 +523,9 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
         model = self.session.query(self.model_class).filter(self._pk_col == id).first()
         if model is None:
             return False
+        self._emit("delete", "before", model)
         self.session.delete(model)
         self._flush()
+        self._emit("delete", "after", model)
         self._commit(commit)
         return True
