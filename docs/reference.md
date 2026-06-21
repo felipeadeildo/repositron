@@ -17,6 +17,7 @@ from repositron import (
     OrderBy,               # the order_by argument type
     UNSET, UnsetType,      # the partial-update sentinel and its type
     on,                    # decorator: tag a method as a lifecycle hook
+    writes,                # decorator: give a custom write flush/commit/rollback
 )
 ```
 
@@ -120,19 +121,30 @@ event raises `TypeError` at import. See [hooks](guides/hooks.md).
 | `"update", "after"`  | `model`         | nothing  |
 | `"delete", "before"` | `model`         | nothing  |
 | `"delete", "after"`  | `model`         | nothing  |
+| `"hydrate", "build"` | `model`         | the DTO  |
 | `"hydrate", "after"` | `model, dto`    | the DTO  |
 
 `before` write hooks run before the flush; `after` run once the model has its
 primary key. `hydrate` hooks fire on every read that hydrates, but not on
-`repo[Shape]` projection.
+`repo[Shape]` projection. `build` is single-winner (most-derived wins); the
+others all run, base classes before subclasses.
 
-## Hooks to override
+## Custom hydration
 
 `_hydrate(self, model) -> DTO`
-:   Convert a model instance to the DTO. Override when the automatic conversion
-    cannot build your DTO at all; to merely add a derived field, prefer a
-    [`hydrate` hook](guides/hooks.md#enriching-the-dto). See
-    [custom hydration](guides/custom-queries.md#custom-hydration).
+:   Build the DTO from a model. Override when the automatic conversion cannot
+    build your DTO at all; to merely add a derived field, prefer a
+    [`hydrate` hook](guides/hooks.md#enriching-the-dto). The override is the same
+    thing as a [`build` hook](guides/hooks.md#replacing-the-build), spelled as a
+    method. See [custom hydration](guides/custom-queries.md#custom-hydration).
+
+## `@writes`
+
+`@writes` on a custom write method runs it through the repository's flush,
+commit, and rollback, so the body only does session work. The method may declare
+`*, commit: bool | None = None` to expose the per-call override; without it the
+write flushes (and commits if `autocommit=True`). See
+[transactions on custom writes](guides/custom-queries.md#writes).
 
 ## Filter values
 
@@ -154,12 +166,20 @@ class PaginatedResult[DTO]:
 
 ## Design principles { #design-principles }
 
-The four ideas that explain every choice in the API.
+The ideas that explain every choice in the API.
 
 - **The session is the caller's.** repositron flushes and never closes the
   session, so transaction boundaries stay in your application code by default.
   Committing is opt-in, per instance (`autocommit=True`) or per write
-  (`commit=True`); see [transactions](guides/updates.md#transactions).
+  (`commit=True`); see [transactions](guides/updates.md#transactions). A custom
+  write gets the same deal through [`@writes`](guides/custom-queries.md#writes),
+  so you never hand-roll flush and rollback.
+- **Extending is adding, not replacing.** A [hook](guides/hooks.md) layers
+  behavior onto what the base already does, so you write only the part that is
+  yours and inherit the rest. The base holds itself to the same rule: its own
+  DTO construction is a [`build` hook](guides/hooks.md#replacing-the-build) you
+  can replace, not a method you must reach around. An override is the rare
+  fallback, not the extension point.
 - **One source of truth per field name.** A rename declared once in
   `field_mapping` applies to both hydration and projection.
 - **Ordering is never implicit.** `list` and `first` are unordered unless asked;

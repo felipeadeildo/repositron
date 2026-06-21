@@ -60,6 +60,7 @@ arguments, the model and, where it applies, the payload or the built DTO.
 | `"update", "after"`  | after flush                                | `model`          | nothing |
 | `"delete", "before"` | before the row is deleted                  | `model`          | nothing |
 | `"delete", "after"`  | after flush                                | `model`          | nothing |
+| `"hydrate", "build"` | to construct the DTO, on every read        | `model`          | the DTO |
 | `"hydrate", "after"` | after the DTO is built, on every read      | `model, dto`     | the DTO |
 
 `before` runs while the row is still being shaped, the place to set a column or
@@ -141,6 +142,35 @@ class ArticleRepository(Repository[Article, ArticleDTO]):
     `hydrate` hook therefore does not fire for a projected shape, which is what
     you want: a narrow shape has nowhere to put the derived field.
 
+## Replacing the build
+
+`build` is the read-side event for the other case: a DTO the automatic build
+*cannot produce at all*. Not a field short, like the `after` hook above, but a
+shape the base has no way to construct, the classic one being a plain `str`.
+
+The base already registers its own `build` hook, the automatic
+model-to-DTO conversion. Tag your own `build` and it takes over:
+
+```python
+class BrandLogoRepository(Repository[BrandLogo, str]):
+    @on("hydrate", mode="build")
+    def url(self, model: BrandLogo) -> str:
+        return str(model.image_url)
+
+
+repo.get(brand_id)   # str | None, not a BrandLogo
+```
+
+Unlike `before` and `after`, which chain, `build` has a single winner: the
+most-derived `build` runs and the base default steps aside. `after` hooks still
+fire on top of whatever `build` returned, so you can replace the construction
+and enrich it.
+
+This is the same job the [`_hydrate` override](custom-queries.md#custom-hydration)
+does, and the two are interchangeable, defining `_hydrate` *is* the `build` hook
+under the hood. Reach for the hook when the construction is a small, named thing;
+reach for the override when it is a longer method you would rather spell out.
+
 ## Sharing hooks across repositories
 
 More than one method can answer the same event, they all run, base classes
@@ -179,19 +209,11 @@ class DocumentRepository(Repository[Document, DocumentDTO, DocumentCreate, Docum
         self.session.add(AuditEntry(document_id=model.id))
 ```
 
-## When you still override
+## When a hook is not enough
 
-The line is "adding" versus "replacing", and almost everything is adding. A hook
-covers it whenever you layer behavior onto what the base already does, a derived
-column, an enriched DTO field, an audit row, a timestamp. You should rarely write
-a `create` or `update` override again.
-
-Overriding is left for the two cases where you are *replacing* the base, not
-adding to it:
-
-- A fundamentally different write, an `INSERT ... ON CONFLICT DO UPDATE`, say,
-  where the base's plain insert is the wrong statement. Write the method yourself
-  with `self.session`; see [custom methods](custom-queries.md).
-- A DTO the automatic build cannot produce at all, not just one field short.
-  Override [`_hydrate`](custom-queries.md#custom-hydration). If you only need to
-  add a field, that is a `hydrate` hook, not an override.
+Hooks add to, or replace, what the base already does. Some methods are not on the
+base at all, a free-text search, a batch import, an `INSERT ... ON CONFLICT DO
+UPDATE`. Those are plain methods you write with `self.session`; see
+[custom methods](custom-queries.md). To give one the same `flush` / `commit` /
+rollback the built-in writes get, decorate it with
+[`@writes`](custom-queries.md#writes).

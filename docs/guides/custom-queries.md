@@ -89,10 +89,12 @@ The automatic model-to-DTO conversion handles the common cases: a dataclass buil
 by field name, a Pydantic model through `model_validate`, or the model returned
 as-is.
 
-If you only need to *add* a derived field to the built DTO, a [`hydrate`
-hook](hooks.md#enriching-the-dto) is the smaller move, it hands you the
-finished DTO to enrich. Override `_hydrate` when the automatic build cannot
-produce the DTO at all and you need to construct it yourself from scratch:
+For the rest, the question is *add* or *replace*:
+
+- To **add** a derived field to the built DTO, use a [`hydrate` hook](hooks.md#enriching-the-dto).
+  It hands you the finished DTO to enrich, so you write one field, not all of them.
+- To **replace** the build, when the automatic path cannot produce the DTO at
+  all, override `_hydrate` and construct it yourself:
 
 ```python
 class UserRepository(Repository[User, UserProfile]):
@@ -110,13 +112,63 @@ class UserRepository(Repository[User, UserProfile]):
         )
 ```
 
-Once overridden, `_hydrate` runs for every read on that repository, so `get`,
-`first`, and `list` all return fully-formed `UserProfile` objects. (Column
-projection via `repo[Shape]` builds the narrow shape positionally and does not go
-through `_hydrate`, which is what keeps a projection a pure column read.)
+`_hydrate` then runs for every read, so `get`, `first`, and `list` all return
+fully-formed `UserProfile` objects. (Column projection via `repo[Shape]` builds
+the narrow shape positionally and does not go through `_hydrate`, which keeps a
+projection a pure column read.)
 
-## A note on transactions
+Overriding `_hydrate` and tagging a method with
+[`@on("hydrate", mode="build")`](hooks.md#replacing-the-build) are the same
+mechanism, the override is just the build hook spelled as a method. Use whichever
+reads better: the override for a longer construction like the one above, the hook
+for a one-liner.
 
-Custom writes should `flush`, never `commit`, the same as the base class, so they
-compose inside the caller's transaction. See the
+## Transactions on custom writes { #writes }
+
+A custom write is responsible for the same `flush` / `commit` / rollback dance
+the built-in `create` / `update` / `delete` handle for you. `@writes` gives a
+custom method that dance, so its body is only the session work:
+
+```python
+from repositron import Repository, writes
+
+
+class CitationRepository(Repository[Citation, CitationDTO, CitationCreate, CitationUpdate]):
+    @writes
+    def upsert(self, payload: CitationCreate) -> None:
+        stmt = pg_insert(Citation).values(...).on_conflict_do_update(...)
+        self.session.execute(stmt)   # flushed for you; rolled back on error
+```
+
+The decorated method flushes after the body, commits if the repository is
+`autocommit=True`, and rolls back on error, exactly like the built-in writes (see
+[committing](updates.md#transactions)). To let a caller commit a single write,
+declare a `commit` parameter and `@writes` honors it:
+
+```python
+    @writes
+    def upsert(self, payload: CitationCreate, *, commit: bool | None = None) -> None:
+        self.session.execute(...)
+
+
+repo.upsert(payload, commit=True)   # this one write commits
+```
+
+When the method needs the primary key mid-way, to attach child rows or return it,
+flush yourself at that point. `@writes` still owns the final flush and the
+commit/rollback:
+
+```python
+    @writes
+    def create_with_lines(self, payload: InvoiceCreate) -> int:
+        invoice = Invoice(customer_id=payload.customer_id)
+        self.session.add(invoice)
+        self.session.flush()        # need invoice.id for the lines below
+        for line in payload.lines:
+            self.session.add(InvoiceLine(invoice_id=invoice.id, sku=line.sku))
+        return invoice.id
+```
+
+Without `@writes`, a custom write should still `flush`, never `commit`, the same
+as the base class, so it composes inside the caller's transaction. See the
 [design principles](../reference.md#design-principles).

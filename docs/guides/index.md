@@ -64,8 +64,8 @@ at a glance whether it is the one you need right now.
 
     ---
 
-    Domain queries and batch inserts, the raw-SQLAlchemy escape hatch for what
-    the base does not cover.
+    Domain queries, batch inserts, and the `@writes` decorator, the
+    raw-SQLAlchemy escape hatch for what the base does not cover.
 
 -   :material-key:{ .lg .middle } __[Primary keys](primary-keys.md)__
 

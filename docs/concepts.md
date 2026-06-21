@@ -74,7 +74,9 @@ every read: a dataclass DTO is built field by field, a Pydantic DTO goes through
 
 When a DTO needs a value no column holds (a count, a join, a derived field), you
 add it with a [`hydrate` hook](guides/hooks.md#enriching-the-dto), repositron
-hydrates the columns, your hook fills the rest.
+hydrates the columns, your hook fills the rest. When the DTO is something the
+automatic build can't produce at all, like a plain `str`, you replace the build
+itself with a [`build` hook](guides/hooks.md#replacing-the-build).
 
 ## Payload
 

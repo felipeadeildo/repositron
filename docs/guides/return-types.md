@@ -104,5 +104,6 @@ it in.
 
 When a DTO needs a value the row alone cannot give, for instance data from
 another table, add it with a [`hydrate` hook](hooks.md#enriching-the-dto). The
-rarer case, a DTO the automatic build cannot produce at all, is an `_hydrate`
-override, covered in [custom methods](custom-queries.md#custom-hydration).
+rarer case, a DTO the automatic build cannot produce at all, like a plain `str`,
+is a [`build` hook](hooks.md#replacing-the-build) (or the equivalent `_hydrate`
+override).
