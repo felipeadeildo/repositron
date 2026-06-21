@@ -13,20 +13,34 @@ hooks compose across mixins and base classes, firing in base-to-subclass order.
 """
 
 from collections.abc import Callable
-from typing import Literal, get_args
+from typing import Literal
 
 HookEvent = Literal["create", "update", "delete", "hydrate"]
 """The repository operation a hook attaches to."""
 
-HookMode = Literal["before", "after"]
-"""When a hook runs: before/after the operation's core (flush for writes, DTO build for hydrate)."""
+HookMode = Literal["before", "build", "after"]
+"""When a hook runs: before/after the operation's core, or `build` (hydrate only) to construct the DTO."""  # noqa: E501
 
 type HookKey = tuple[HookEvent, HookMode]
 
+BUILD_HOOK: HookKey = ("hydrate", "build")
+"""The single-winner hook that constructs the DTO from a model (last-in-MRO wins)."""
+
+# before/after on every event, except hydrate/before (nothing precedes a read's DTO build);
+# build is hydrate-only (writes have no DTO to construct).
 VALID_HOOKS: frozenset[HookKey] = frozenset(
-    (event, mode) for event in get_args(HookEvent) for mode in get_args(HookMode)
-) - {("hydrate", "before")}
-"""Every (event, mode) pair except `hydrate`/`before`: there is nothing to act on before a read builds the DTO."""  # noqa: E501
+    {
+        ("create", "before"),
+        ("create", "after"),
+        ("update", "before"),
+        ("update", "after"),
+        ("delete", "before"),
+        ("delete", "after"),
+        ("hydrate", "after"),
+        BUILD_HOOK,
+    }
+)
+"""Valid (event, mode) pairs: before/after on every event (minus hydrate/before), plus hydrate/build."""  # noqa: E501
 
 _HOOK_ATTR = "__repositron_hooks__"
 
@@ -59,6 +73,9 @@ def collect_hooks(cls: type) -> HookRegistry:
     Stores method names (not functions), so a subclass override of a tagged
     method is the one that runs. A base class's hook runs before a subclass's.
 
+    The `build` hook is single-winner: the most-derived one replaces any
+    inherited build, so a subclass's build overrides the base default.
+
     Raises:
         TypeError: if a method is tagged with an unknown (event, mode) pair.
 
@@ -70,6 +87,10 @@ def collect_hooks(cls: type) -> HookRegistry:
             for key in getattr(member, _HOOK_ATTR, ()):
                 if key not in VALID_HOOKS:
                     raise TypeError(f"{cls.__name__}.{name}: unknown hook {key!r}")
+                if key == BUILD_HOOK:
+                    # Single winner: most-derived build replaces the inherited one.
+                    registry[key] = [name]
+                    continue
                 names = registry.setdefault(key, [])
                 if name not in names:
                     names.append(name)

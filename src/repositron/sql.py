@@ -22,7 +22,7 @@ from repositron.base import (
     PaginatedResult,
     ReadOnlyRepositoryABC,
 )
-from repositron.hooks import HookEvent, HookMode, HookRegistry, collect_hooks
+from repositron.hooks import HookEvent, HookMode, HookRegistry, collect_hooks, on
 from repositron.sentinel import UnsetType
 
 if TYPE_CHECKING:
@@ -198,14 +198,19 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
             **filters,
         )
 
+    @on("hydrate", mode="build")
     def _hydrate(self, model: ModelT) -> DTOT:
         """
-        Convert a model instance to the active DTO.
+        Convert a model instance to the active DTO. The default `build` hook.
 
         When the DTO is the model class the instance is returned unchanged. A
         Pydantic DTO goes through `model_validate`, a dataclass DTO is built by
-        field name; both honor `field_mapping` for renames. Override for a DTO
-        the automatic path can't construct.
+        field name; both honor `field_mapping` for renames.
+
+        Two ways to customize the build, both resolved as the `build` hook
+        (most-derived wins): override `_hydrate` directly, or tag another method
+        with `@on("hydrate", mode="build")`. The latter suits a non-DTO result
+        the automatic path can't construct, e.g. a bare `str`.
         """
         dto = self._dto
         if dto is self.model_class:
@@ -234,17 +239,31 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
                 f"Override _hydrate() in your repository subclass. Error: {e}"
             ) from e
 
+    @cached_property
+    def _build_hook(self) -> Callable[[ModelT], DTOT]:
+        """
+        The bound `build` hook (most-derived wins). Falls back to `_hydrate` for the
+        (unusual) base class, which skips `__init_subclass__` and so registers no hooks.
+        """
+        return next(self._hooks_for("hydrate", "build"), self._hydrate)
+
+    @cached_property
+    def _after_hooks(self) -> _list[Callable[[ModelT, DTOT], DTOT]]:
+        """The bound `hydrate`/`after` hooks, resolved once for the instance's lifetime."""
+        return list(self._hooks_for("hydrate", "after"))
+
     def _hydrate_one(self, model: ModelT) -> DTOT:
         """
-        Hydrate `model` to the DTO, folding the `hydrate`/`after` hooks over the result.
+        Hydrate `model` to the DTO via the `build` hook, then fold `after` hooks over it.
 
-        Each hook receives `(model, dto)` and returns a (possibly enriched) DTO,
-        so they chain like a pipeline. Reads go through here; `_hydrate` stays the
-        override point for the build itself. Projection (`repo[Shape]`) bypasses
-        both, so hooks do not fire there.
+        The `build` hook (most-derived wins; the base default is `_hydrate`)
+        constructs the DTO from the model. Each `after` hook then receives
+        `(model, dto)` and returns a possibly enriched DTO, so they chain like a
+        pipeline. Projection (`repo[Shape]`) bypasses both, so hooks do not fire
+        there.
         """
-        dto = self._hydrate(model)
-        for hook in self._hooks_for("hydrate", "after"):
+        dto = self._build_hook(model)
+        for hook in self._after_hooks:
             dto = cast("DTOT", hook(model, dto))
         return dto
 
