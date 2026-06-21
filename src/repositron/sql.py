@@ -273,11 +273,13 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         return shape if is_dataclass(shape) else None
 
     def get(self, id: PKT) -> DTOT | None:
-        """Fetch one record by primary key, hydrated to the active DTO."""
-        model = self.session.query(self.model_class).filter(self._pk_col == id).first()
-        if model is None:
-            return None
-        return self._hydrate(model)
+        """Fetch one record by primary key, as the active DTO, or None if absent."""
+        dto = self._projecting()
+        if dto is not None:
+            row = self._project(dto, extra_filters=[self._pk_col == id], order_by=None).first()
+            return cast("DTOT", dto(*row)) if row is not None else None
+        model = self._select(extra_filters=[self._pk_col == id]).first()
+        return self._hydrate(model) if model is not None else None
 
     def first(
         self,

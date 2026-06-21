@@ -24,7 +24,10 @@ class UserCard:
 
 repo[UserCard].list(is_active=True)   # SELECT id, name -> list[UserCard]
 repo[UserCard].first(id=5)            # UserCard | None
+repo[UserCard].get(5)                 # UserCard | None
 ```
+
+`get`, `first`, `list`, and `list_paginated` all project when a shape is bound.
 
 The generated SQL is a real column projection. The database reads and ships only
 those columns, and you get back `UserCard` objects, not full `User` rows you then

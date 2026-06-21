@@ -62,6 +62,22 @@ def test_projection_applies_to_first_and_paginated(
     assert all(isinstance(i, UserNarrow) for i in page.items)
 
 
+def test_get_projects_when_shape_bound(
+    session: Session, sql_log: list[str], seed_users: list[User]
+):
+    repo = UserRepo(session)
+    uid = seed_users[0].id
+
+    sql_log.clear()
+    narrow = repo[UserNarrow].get(uid)
+    assert isinstance(narrow, UserNarrow)
+    assert "email" not in _select_columns(sql_log)  # projected, like first/list
+
+    full = repo.get(uid)  # no shape bound -> full DTO, hydrated
+    assert full is not None
+    assert full.email == "ada@example.com"
+
+
 def test_non_dataclass_dto_does_not_project(
     session: Session, sql_log: list[str], seed_users: list[User]
 ):
