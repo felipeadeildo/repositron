@@ -12,9 +12,9 @@ projection, and model-to-DTO hydration, without per-table CRUD boilerplate.
 """
 
 from repositron.base import OrderBy, PaginatedResult
-from repositron.hooks import on
+from repositron.hooks import on, writes
 from repositron.sentinel import UNSET, UnsetType
-from repositron.sql import ReadOnlyRepository, Repository, writes
+from repositron.sql import ReadOnlyRepository, Repository
 
 __all__ = [
     "UNSET",

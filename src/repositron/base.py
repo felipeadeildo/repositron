@@ -9,10 +9,12 @@ SQLAlchemy implementation that a project actually inherits from lives in
 import datetime
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from typing import Protocol
 
-from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from repositron.sentinel import UnsetType
@@ -133,3 +135,18 @@ class CRUDRepositoryABC[
     def delete(self, id: PKT) -> bool:
         """Delete a record by primary key. False if not found."""
         raise NotImplementedError
+
+
+class Writable(Protocol):
+    """
+    The transaction surface a `@writes`-decorated method relies on.
+
+    Structural, so `@writes` accepts any repository regardless of how its
+    generic parameters are bound; both `ReadOnlyRepository` and `Repository`
+    satisfy it.
+    """
+
+    session: Session
+
+    def _run[R](self, op: Callable[[], R]) -> R: ...
+    def _commit(self, commit: bool | None) -> None: ...

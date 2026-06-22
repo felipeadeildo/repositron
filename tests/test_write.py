@@ -1,5 +1,5 @@
 import pytest
-from conftest import User, UserCreate, UserRepo, UserUpdate
+from conftest import Account, AccountDTO, User, UserCreate, UserRepo, UserUpdate
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, PendingRollbackError
 from sqlalchemy.orm import Session
@@ -198,3 +198,22 @@ def test_writes_runs_on_read_only_repo(session: Session):
     uid = _seed_one(session)
     ReadMostlyRepo(session).rename(uid, "renamed")  # must not raise
     assert _fetch(session, uid).name == "renamed"  # the write flushed
+
+
+class StrKeyReadRepo(ReadOnlyRepository[Account, AccountDTO, str]):
+    pk_column = "account_id"
+
+    @writes
+    def rename(self, account_id: str, name: str) -> None:
+        account = self.session.get(Account, account_id)
+        if account is not None:
+            account.name = name
+
+
+def test_writes_runs_on_read_only_repo_with_str_pk(session: Session):
+    account = Account(account_id="acct_1", name="orig")
+    session.add(account)
+    session.flush()
+    StrKeyReadRepo(session).rename("acct_1", "renamed")  # must not raise
+    got = session.get(Account, "acct_1")
+    assert got is not None and got.name == "renamed"

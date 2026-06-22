@@ -7,11 +7,10 @@ column projection via `repo[DTO]`, and the equality/expression filter split.
 """
 
 import copy
-import functools
 from collections.abc import Callable, Iterator
 from dataclasses import fields, is_dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, ClassVar, Concatenate, cast, get_args, get_origin
+from typing import TYPE_CHECKING, ClassVar, cast, get_args, get_origin
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
@@ -438,48 +437,6 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         """Check whether a record with this primary key exists."""
         stmt = select(self._pk_col).where(self._pk_col == id).limit(1)
         return self.session.scalar(stmt) is not None
-
-
-def writes[T: ReadOnlyRepository, **P, R](
-    method: Callable[Concatenate[T, P], R],
-) -> Callable[Concatenate[T, P], R]:
-    """
-    Give a custom write method the same flush/commit/rollback as the built-ins.
-
-    The body only does the session work:
-
-    ```python
-    @writes
-    def archive(self, id: int) -> None:
-        self.session.add(...)  # flushed for you; rolled back on error
-    ```
-
-    Commit follows the usual rules: a flush, plus a commit if the repo is
-    `autocommit=True`. Declare `*, commit: bool | None = None` to also let
-    callers override per call (`repo.upsert(p, commit=True)`); the wrapper
-    consumes it, so the body never has to handle it.
-
-    ```python
-    @writes
-    def upsert(self, payload, *, commit: bool | None = None) -> None:
-        self.session.execute(...)
-    ```
-    """
-
-    @functools.wraps(method)
-    def wrapper(self: T, *args: P.args, **kwargs: P.kwargs) -> R:
-        commit = cast("bool | None", kwargs.pop("commit", None))
-
-        def op() -> R:
-            result = method(self, *args, **kwargs)
-            self.session.flush()
-            return result
-
-        result = self._run(op)
-        self._commit(commit)
-        return result
-
-    return wrapper
 
 
 class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT = int](
