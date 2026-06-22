@@ -18,21 +18,93 @@ write only the part that is yours; repositron keeps doing the rest. This is the
 normal way to extend a repository, an override is the rare fallback at the end of
 this page.
 
-```python
+??? note "Setup"
+    The examples on this page share one task-tracker domain. `Task` is the
+    aggregate, `AuditEntry` records writes, and `Comment` hangs off a task for the
+    counters further down.
+
+    ```python
+    from dataclasses import dataclass
+    from datetime import datetime
+
+    from sqlalchemy import ForeignKey
+    from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+    class Base(DeclarativeBase): ...
+
+
+    class Task(Base):
+        __tablename__ = "tasks"
+
+        id: Mapped[int] = mapped_column(primary_key=True)
+        workspace_id: Mapped[int]
+        parent_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"))
+        title: Mapped[str]
+        description: Mapped[str | None]
+        status: Mapped[str]
+        assignee_id: Mapped[int | None]
+        created_at: Mapped[datetime]
+        updated_at: Mapped[datetime | None]
+        archived_at: Mapped[datetime | None]
+
+
+    class AuditEntry(Base):
+        __tablename__ = "audit_entries"
+
+        id: Mapped[int] = mapped_column(primary_key=True)
+        task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"))
+        action: Mapped[str]
+        at: Mapped[datetime]
+
+
+    class Comment(Base):
+        __tablename__ = "comments"
+
+        id: Mapped[int] = mapped_column(primary_key=True)
+        task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"))
+
+
+    @dataclass(frozen=True)
+    class TaskDTO:
+        id: int
+        title: str
+        status: str
+        assignee_id: int | None
+
+
+    @dataclass(frozen=True)
+    class TaskCreate:
+        workspace_id: int
+        title: str
+        description: str | None = None
+        assignee_id: int | None = None
+
+
+    @dataclass(frozen=True)
+    class TaskUpdate:
+        title: str | None = None
+        description: str | None = None
+        status: str | None = None
+        assignee_id: int | None = None
+    ```
+
+```python hl_lines="6 8-9"
 from datetime import UTC, datetime
 from repositron import Repository, on
 
 
-class ArticleRepository(Repository[Article, ArticleDTO, ArticleCreate, ArticleUpdate]):
+class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
     @on("create", mode="before")
-    def stamp_published(self, model: Article, payload: ArticleCreate) -> None:
-        model.published_at = datetime.now(UTC)
+    def set_defaults(self, model: Task, payload: TaskCreate) -> None:
+        model.created_at = datetime.now(UTC)
+        model.status = "open"
 ```
 
 That is the whole repository. `create` still builds the model from the payload,
 flushes, returns the new id, and commits if asked. Right before the flush, your
-hook runs and sets `published_at`. No `create` override, no `self.session`, no
-plumbing.
+hook runs and sets `created_at` and the default `status`. No `create` override,
+no `self.session`, no plumbing.
 
 ## How it works
 
@@ -68,27 +140,29 @@ derive a default. `after` runs once the flush has assigned the primary key, whic
 is when you can write related rows that point back to it:
 
 ```python
-class OrderRepository(Repository[Order, OrderDTO, OrderCreate, OrderUpdate]):
+class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
     @on("create", mode="after")
-    def log_creation(self, model: Order) -> None:
+    def log_creation(self, model: Task) -> None:
         # model.id exists now, so the audit row can reference it
-        self.session.add(AuditEntry(order_id=model.id, action="created"))
+        self.session.add(
+            AuditEntry(task_id=model.id, action="created", at=datetime.now(UTC))
+        )
 ```
 
 That `after` hook shares the repository's transaction, so the audit row flushes
-and commits together with the order. (When you want a write to *not* commit yet,
+and commits together with the task. (When you want a write to *not* commit yet,
 see [transactions](updates.md#transactions).)
 
 `before` hooks mutate the model in place; nothing is returned. A common use is
 normalizing input regardless of how the caller spelled it:
 
 ```python
-class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
+class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
     @on("create", mode="before")
     @on("update", mode="before")
-    def normalize_email(self, model: User, payload) -> None:
-        if model.email:
-            model.email = model.email.strip().lower()
+    def normalize_title(self, model: Task, payload) -> None:
+        if model.title:
+            model.title = model.title.strip()
 ```
 
 ## Enriching the DTO
@@ -103,21 +177,31 @@ filled in and correctly typed, and returns one. With a frozen dataclass,
 adds the one field you care about and leaves the rest untouched:
 
 ```python
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from sqlalchemy import func, select
 from repositron import Repository, on
 
 
-class ArticleRepository(Repository[Article, ArticleDTO]):
+@dataclass(frozen=True)
+class TaskDetail:
+    id: int
+    title: str
+    status: str
+    assignee_id: int | None
+    comment_count: int = 0
+    subtask_count: int = 0
+
+
+class TaskRepository(Repository[Task, TaskDetail]):
     @on("hydrate", mode="after")
-    def add_comment_count(self, model: Article, dto: ArticleDTO) -> ArticleDTO:
+    def add_comment_count(self, model: Task, dto: TaskDetail) -> TaskDetail:
         count = self.session.scalar(
-            select(func.count()).where(Comment.article_id == model.id)
+            select(func.count()).where(Comment.task_id == model.id)
         )
         return replace(dto, comment_count=count or 0)
 ```
 
-Overriding `_hydrate` for this would mean restating every field of `ArticleDTO`
+Overriding `_hydrate` for this would mean restating every field of `TaskDetail`
 just to add `comment_count`. The hook adds the derived field and nothing else,
 the base's typed construction does the rest. It runs on every read that
 hydrates, `get`, `first`, `list`, `list_paginated`, so the field is always
@@ -126,14 +210,24 @@ present.
 Hooks chain, so several `hydrate` hooks each enrich the DTO in turn:
 
 ```python
-class ArticleRepository(Repository[Article, ArticleDTO]):
+class TaskRepository(Repository[Task, TaskDetail]):
     @on("hydrate", mode="after")
-    def add_comment_count(self, model: Article, dto: ArticleDTO) -> ArticleDTO:
+    def add_comment_count(self, model: Task, dto: TaskDetail) -> TaskDetail:
         return replace(dto, comment_count=self._count_comments(model.id))
 
     @on("hydrate", mode="after")
-    def add_tags(self, model: Article, dto: ArticleDTO) -> ArticleDTO:
-        return replace(dto, tags=self._load_tags(model.id))
+    def add_subtask_count(self, model: Task, dto: TaskDetail) -> TaskDetail:
+        return replace(dto, subtask_count=self._count_subtasks(model.id))
+
+    def _count_comments(self, task_id: int) -> int:
+        return self.session.scalar(
+            select(func.count()).where(Comment.task_id == task_id)
+        ) or 0
+
+    def _count_subtasks(self, task_id: int) -> int:
+        return self.session.scalar(
+            select(func.count()).where(Task.parent_id == task_id)
+        ) or 0
 ```
 
 !!! note "Projection skips hydrate hooks"
@@ -151,14 +245,14 @@ shape the base has no way to construct, the classic one being a plain `str`.
 The base already registers its own `build` hook, the automatic
 model-to-DTO conversion. Tag your own `build` and it takes over:
 
-```python
-class BrandLogoRepository(Repository[BrandLogo, str]):
+```python hl_lines="2 4"
+class TaskRefRepository(Repository[Task, str]):
     @on("hydrate", mode="build")
-    def url(self, model: BrandLogo) -> str:
-        return str(model.image_url)
+    def title(self, model: Task) -> str:
+        return model.title
 
 
-repo.get(brand_id)   # str | None, not a BrandLogo
+repo.get(task_id)   # str | None, not a Task
 ```
 
 Unlike `before` and `after`, which chain, `build` has a single winner: the
@@ -179,7 +273,7 @@ concern that cuts across tables lives in a mixin once, and every repository that
 inherits it gets the behavior, with no `super()` call to remember.
 
 ```python
-class TimestampedMixin:
+class TimestampMixin:
     @on("create", mode="before")
     def set_created_at(self, model, payload) -> None:
         model.created_at = datetime.now(UTC)
@@ -189,11 +283,11 @@ class TimestampedMixin:
         model.updated_at = datetime.now(UTC)
 
 
-class UserRepository(TimestampedMixin, Repository[User, UserDTO, UserCreate, UserUpdate]):
+class TaskRepository(TimestampMixin, Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
     pass        # every write is timestamped, with no override anywhere
 
 
-class ArticleRepository(TimestampedMixin, Repository[Article, ArticleDTO, ...]):
+class WorkspaceRepository(TimestampMixin, Repository[Workspace, WorkspaceDTO, ...]):
     pass        # and so is this one
 ```
 
@@ -201,12 +295,12 @@ A single method can also serve several events, stack `@on`. One audit method for
 create, update, and delete:
 
 ```python
-class DocumentRepository(Repository[Document, DocumentDTO, DocumentCreate, DocumentUpdate]):
+class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
     @on("create", mode="after")
     @on("update", mode="after")
     @on("delete", mode="after")
-    def audit(self, model: Document) -> None:
-        self.session.add(AuditEntry(document_id=model.id))
+    def audit(self, model: Task) -> None:
+        self.session.add(AuditEntry(task_id=model.id, at=datetime.now(UTC)))
 ```
 
 ## When a hook is not enough

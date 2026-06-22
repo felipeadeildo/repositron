@@ -10,20 +10,103 @@ repositron's job is to remove the boilerplate, not to box you in, so everything
 on your repository is an ordinary class with `self.session` and `self.model_class`
 to build on.
 
+??? note "Setup"
+
+    The examples below all share one task-tracker domain: a `Task` model, its
+    DTOs and payloads, a `TaskRepository`, and two extra models (`Member`,
+    `Subtask`) that some examples join against or write to.
+
+    ```python
+    from __future__ import annotations
+
+    from dataclasses import dataclass
+    from datetime import datetime
+
+    from sqlalchemy import ForeignKey
+    from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+    from repositron import Repository, UNSET, UnsetType
+
+
+    class Base(DeclarativeBase): ...
+
+
+    class Task(Base):
+        __tablename__ = "tasks"
+
+        id: Mapped[int] = mapped_column(primary_key=True)
+        workspace_id: Mapped[int]
+        title: Mapped[str]
+        description: Mapped[str | None] = mapped_column(default=None)
+        status: Mapped[str] = mapped_column(default="open")
+        assignee_id: Mapped[int | None] = mapped_column(default=None)
+        created_at: Mapped[datetime] = mapped_column(default=datetime.now)
+        archived_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+    class Member(Base):
+        __tablename__ = "members"
+
+        id: Mapped[int] = mapped_column(primary_key=True)
+        name: Mapped[str]
+
+
+    class Subtask(Base):
+        __tablename__ = "subtasks"
+
+        id: Mapped[int] = mapped_column(primary_key=True)
+        task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"))
+        title: Mapped[str]
+
+
+    @dataclass
+    class TaskDTO:
+        id: int
+        title: str
+        status: str
+        assignee_id: int | None
+
+
+    @dataclass
+    class TaskCreate:
+        workspace_id: int
+        title: str
+        description: str | None | UnsetType = UNSET
+        assignee_id: int | None | UnsetType = UNSET
+
+
+    @dataclass
+    class TaskUpdate:
+        title: str | UnsetType = UNSET
+        description: str | None | UnsetType = UNSET
+        status: str | UnsetType = UNSET
+        assignee_id: int | None | UnsetType = UNSET
+
+
+    class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]): ...
+    ```
+
 ## Domain queries
 
 A method that does not fit `get` / `list` is just a method. You have the session,
 the model, and the full SQLAlchemy API:
 
 ```python
-class UserRepository(Repository[User, UserDTO]):
-    def active_in_org(self, organization_id: int) -> list[UserDTO]:
-        return self.list(is_active=True, organization_id=organization_id)
+from datetime import datetime
 
-    def deactivate_all_in_org(self, organization_id: int) -> None:
-        self.session.query(User).filter(
-            User.organization_id == organization_id
-        ).update({User.is_active: False}, synchronize_session=False)
+from sqlalchemy import update
+
+
+class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
+    def open_in_workspace(self, workspace_id: int) -> list[TaskDTO]:
+        return self.list(status="open", workspace_id=workspace_id)
+
+    def archive_all_done(self, workspace_id: int) -> None:
+        self.session.execute(
+            update(Task)
+            .where(Task.workspace_id == workspace_id, Task.status == "done")
+            .values(archived_at=datetime.now())
+        )
         self.session.flush()
 ```
 
@@ -38,22 +121,22 @@ the classic case, give it a name. A method that returns a SQLAlchemy expression
 plugs straight into `extra_filters`:
 
 ```python
-from sqlalchemy import or_, ColumnElement
+from sqlalchemy import ColumnElement, or_
 
 
-class UserRepository(Repository[User, UserDTO]):
+class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
     def search(self, q: str) -> ColumnElement[bool]:
         pattern = f"%{q}%"
         return or_(
-            self.model_class.name.ilike(pattern),
-            self.model_class.email.ilike(pattern),
+            Task.title.ilike(pattern),
+            Task.description.ilike(pattern),
         )
 
 
-repo.list(extra_filters=[repo.search("ada")], is_active=True)
+repo.list(extra_filters=[repo.search("deploy")], status="open")
 ```
 
-Callers express intent ("search for ada") and the column logic lives in one
+Callers express intent ("search for deploy") and the column logic lives in one
 place.
 
 ## Batch inserts
@@ -63,11 +146,11 @@ the per-row flush is the wrong tool. Add a batch method that uses
 `session.add_all` and flushes once:
 
 ```python
-class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
-    def create_many(self, payloads: list[UserCreate]) -> None:
+class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
+    def create_many(self, payloads: list[TaskCreate]) -> None:
         if not payloads:
             return
-        rows = [User(full_name=p.full_name, email=p.email) for p in payloads]
+        rows = [Task(workspace_id=p.workspace_id, title=p.title) for p in payloads]
         self.session.add_all(rows)
         self.session.flush()
 ```
@@ -76,8 +159,8 @@ The same shape works for a batch that needs the generated ids back, by reading
 them off the flushed models:
 
 ```python
-    def create_many_returning(self, payloads: list[UserCreate]) -> list[int]:
-        rows = [User(full_name=p.full_name, email=p.email) for p in payloads]
+    def create_many_returning(self, payloads: list[TaskCreate]) -> list[int]:
+        rows = [Task(workspace_id=p.workspace_id, title=p.title) for p in payloads]
         self.session.add_all(rows)
         self.session.flush()
         return [r.id for r in rows]
@@ -97,23 +180,34 @@ For the rest, the question is *add* or *replace*:
   all, override `_hydrate` and construct it yourself:
 
 ```python
-class UserRepository(Repository[User, UserProfile]):
-    def _hydrate(self, model: User) -> UserProfile:
-        role_names = (
-            self.session.query(Role.name)
-            .join(UserRole, UserRole.role_id == Role.id)
-            .filter(UserRole.user_id == model.id)
-            .all()
-        )
-        return UserProfile(
+from dataclasses import dataclass
+
+from sqlalchemy import select
+
+
+@dataclass
+class TaskDetail:
+    id: int
+    title: str
+    status: str
+    assignee_name: str | None   # rolled up from Member, not a column on Task
+
+
+class TaskRepository(Repository[Task, TaskDetail]):
+    def _hydrate(self, model: Task) -> TaskDetail:
+        assignee_name = self.session.scalars(
+            select(Member.name).where(Member.id == model.assignee_id)
+        ).first()
+        return TaskDetail(
             id=model.id,
-            name=model.full_name,
-            roles=[r.name for r in role_names],
+            title=model.title,
+            status=model.status,
+            assignee_name=assignee_name,
         )
 ```
 
 `_hydrate` then runs for every read, so `get`, `first`, and `list` all return
-fully-formed `UserProfile` objects. (Column projection via `repo[Shape]` builds
+fully-formed `TaskDetail` objects. (Column projection via `repo[Shape]` builds
 the narrow shape positionally and does not go through `_hydrate`, which keeps a
 projection a pure column read.)
 
@@ -129,15 +223,18 @@ A custom write is responsible for the same `flush` / `commit` / rollback dance
 the built-in `create` / `update` / `delete` handle for you. `@writes` gives a
 custom method that dance, so its body is only the session work:
 
-```python
+```python hl_lines="7"
+from sqlalchemy import update
+
 from repositron import Repository, writes
 
 
-class CitationRepository(Repository[Citation, CitationDTO, CitationCreate, CitationUpdate]):
+class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
     @writes
-    def upsert(self, payload: CitationCreate) -> None:
-        stmt = pg_insert(Citation).values(...).on_conflict_do_update(...)
-        self.session.execute(stmt)   # flushed for you; rolled back on error
+    def bulk_set_status(self, task_ids: list[int], status: str) -> None:
+        self.session.execute(
+            update(Task).where(Task.id.in_(task_ids)).values(status=status)
+        )   # flushed for you; rolled back on error
 ```
 
 The decorated method flushes after the body, commits if the repository is
@@ -147,11 +244,15 @@ declare a `commit` parameter and `@writes` honors it:
 
 ```python
     @writes
-    def upsert(self, payload: CitationCreate, *, commit: bool | None = None) -> None:
-        self.session.execute(...)
+    def bulk_set_status(
+        self, task_ids: list[int], status: str, *, commit: bool | None = None
+    ) -> None:
+        self.session.execute(
+            update(Task).where(Task.id.in_(task_ids)).values(status=status)
+        )
 
 
-repo.upsert(payload, commit=True)   # this one write commits
+repo.bulk_set_status([1, 2, 3], "done", commit=True)   # this one write commits
 ```
 
 When the method needs the primary key mid-way, to attach child rows or return it,
@@ -160,13 +261,13 @@ commit/rollback:
 
 ```python
     @writes
-    def create_with_lines(self, payload: InvoiceCreate) -> int:
-        invoice = Invoice(customer_id=payload.customer_id)
-        self.session.add(invoice)
-        self.session.flush()        # need invoice.id for the lines below
-        for line in payload.lines:
-            self.session.add(InvoiceLine(invoice_id=invoice.id, sku=line.sku))
-        return invoice.id
+    def create_with_subtasks(self, payload: TaskCreate, subtasks: list[str]) -> int:
+        task = Task(workspace_id=payload.workspace_id, title=payload.title)
+        self.session.add(task)
+        self.session.flush()        # need task.id for the subtasks below
+        for title in subtasks:
+            self.session.add(Subtask(task_id=task.id, title=title))
+        return task.id
 ```
 
 Without `@writes`, a custom write should still `flush`, never `commit`, the same

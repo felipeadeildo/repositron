@@ -29,24 +29,33 @@ dataclasses, that is the whole footprint. Nothing else comes along for the ride.
 
 ## A model to work with
 
-Everything below builds on one ordinary SQLAlchemy model. There is nothing
-repositron-specific in it, so if you already have models, point repositron at
-those instead.
+Everything in these docs is built around one small domain: a task tracker, with
+`Task` rows that belong to a workspace. It is an ordinary SQLAlchemy model, with
+nothing repositron-specific in it, so if you already have models, point
+repositron at those instead.
 
 ```python
+import datetime
+
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase): ...
 
 
-class User(Base):
-    __tablename__ = "users"
+class Task(Base):
+    __tablename__ = "tasks"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    full_name: Mapped[str]
-    email: Mapped[str]
-    is_active: Mapped[bool] = mapped_column(default=True)
+    workspace_id: Mapped[int]
+    title: Mapped[str]
+    description: Mapped[str | None] = mapped_column(default=None)
+    status: Mapped[str] = mapped_column(default="open")     # open | in_progress | done
+    assignee_id: Mapped[int | None] = mapped_column(default=None)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        default=lambda: datetime.datetime.now(datetime.UTC)
+    )
+    archived_at: Mapped[datetime.datetime | None] = mapped_column(default=None)
 ```
 
 ## Declare the shapes
@@ -65,59 +74,69 @@ ones you do not need.
 
 ```python
 from dataclasses import dataclass
-from repositron import Repository, UNSET, UnsetType
+
+from repositron import UNSET, UnsetType
 
 
 @dataclass(frozen=True, slots=True)
-class UserDTO:                 # the shape reads return
+class TaskDTO:                 # the shape reads return
     id: int
-    name: str                  # the model column is called full_name
-    email: str
+    title: str
+    status: str
+    assignee_id: int | None
 
 
 @dataclass
-class UserCreate:              # what create() accepts
-    full_name: str
-    email: str
+class TaskCreate:              # what create() accepts
+    workspace_id: int
+    title: str
+    description: str | None | UnsetType = UNSET
+    assignee_id: int | None | UnsetType = UNSET
 
 
 @dataclass
-class UserUpdate:              # what update() accepts
-    full_name: str | UnsetType = UNSET
-    email: str | UnsetType = UNSET
+class TaskUpdate:              # what update() accepts
+    title: str | UnsetType = UNSET
+    status: str | UnsetType = UNSET
+    assignee_id: int | None | UnsetType = UNSET   # None = unassign (SET NULL)
 ```
 
-Notice that `UserDTO.name` does not match the model's `full_name` column. That
-mismatch is intentional, and it is the one thing the repository cannot guess. So
-you tell it once:
+`TaskDTO` is deliberately narrower than the model, it carries what a list view
+needs, not every column. The `UNSET` defaults on the payloads are how a field
+gets *left alone* on a write; [updating rows](guides/updates.md) covers why that
+matters.
+
+Wire the three together by subclassing `Repository`:
 
 ```python
-class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
-    field_mapping = {"full_name": "name"}   # model column : DTO field
+from repositron import Repository
+
+
+class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
+    pass
 ```
 
-That is the entire class. Its body is a single attribute, and that attribute is
-the only line you would have to change if the column were renamed tomorrow.
-`field_mapping`, the type parameters, and the other knobs all get a proper
-treatment in [Configuration](guides/configuration.md).
+That is the entire class. Everything below uses this `TaskRepository`. The
+[guides](guides/index.md) add the knobs, `field_mapping` for renamed columns, a
+non-`int` key, hooks, as you need them.
 
 ## Use it
 
 Hand the repository a session and every method is already there, already typed:
 
 ```python
-repo = UserRepository(session)
+repo = TaskRepository(session)
 
-repo.get(1)                                          # UserDTO | None
-repo.list(is_active=True)                            # list[UserDTO]
-repo.count(is_active=True)                           # int
-repo.exists(1)                                       # bool
-repo.create(UserCreate("Ada Lovelace", "ada@x.com")) # int  (the new id)
-repo.update(1, UserUpdate(full_name="Ada L."))       # True; email untouched
-repo.delete(1)                                       # bool
+repo.get(1)                                  # TaskDTO | None
+repo.list(workspace_id=42, status="open")    # list[TaskDTO]
+repo.count(workspace_id=42)                  # int
+repo.exists(1)                               # bool
+repo.create(TaskCreate(workspace_id=42, title="Ship the docs"))  # int (new id)
+repo.update(1, TaskUpdate(status="done"))    # True; title untouched
+repo.delete(1)                               # bool
 ```
 
-Hover any of those calls in your editor. `repo.list()` is `list[UserDTO]`, not
+Hover any of those calls in your editor. `repo.list()` is `list[TaskDTO]`, not
 `list[Any]`. The same object you return here is the object your web framework
 serializes, so there is no second schema to keep in step.
 

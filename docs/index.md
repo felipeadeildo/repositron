@@ -18,35 +18,39 @@ Full CRUD, with <strong>zero per-table boilerplate</strong>.
 ---
 
 Every SQLAlchemy project ends up with the same folder: one repository class per
-table, each wrapping `session.query(...)` in the same `get`, the same `list`,
-the same pagination math. repositron writes that layer once, generically, and
-types it against your model and your return shape.
+table, each wrapping `select(...)` / `session.scalars(...)` in the same `get`,
+the same `list`, the same pagination math. repositron writes that layer once,
+generically, and types it against your model and your return shape.
 
 === ":material-close-circle: Hand-written, per table"
 
     ```python
-    class UserRepository:
+    from sqlalchemy import select
+
+
+    class TaskRepository:
         def __init__(self, session: Session) -> None:
             self.session = session
 
-        def get(self, id: int) -> UserDTO | None:
-            row = self.session.query(User).filter(User.id == id).first()
+        def get(self, id: int) -> TaskDTO | None:
+            row = self.session.scalars(select(Task).where(Task.id == id)).first()
             if row is None:
                 return None
-            return UserDTO(id=row.id, name=row.full_name, email=row.email)
+            return TaskDTO(id=row.id, title=row.title, status=row.status, assignee_id=row.assignee_id)
 
-        def list(self, *, is_active: bool | None = None) -> list[UserDTO]:
-            query = self.session.query(User)
-            if is_active is not None:
-                query = query.filter(User.is_active == is_active)
-            return [UserDTO(id=r.id, name=r.full_name, email=r.email) for r in query.all()]
+        def list(self, *, status: str | None = None) -> list[TaskDTO]:
+            stmt = select(Task)
+            if status is not None:
+                stmt = stmt.where(Task.status == status)
+            rows = self.session.scalars(stmt).all()
+            return [TaskDTO(id=r.id, title=r.title, status=r.status, assignee_id=r.assignee_id) for r in rows]
 
-        def update(self, id: int, *, full_name: str | None = None) -> bool:
-            user = self.session.query(User).filter(User.id == id).first()
-            if user is None:
+        def update(self, id: int, *, assignee_id: int | None = None) -> bool:
+            task = self.session.scalars(select(Task).where(Task.id == id)).first()
+            if task is None:
                 return False
-            if full_name is not None:   # and how do you null it on purpose?
-                user.full_name = full_name
+            if assignee_id is not None:   # and how do you unassign on purpose?
+                task.assignee_id = assignee_id
             self.session.flush()
             return True
 
@@ -61,22 +65,31 @@ types it against your model and your return shape.
 
 
     @dataclass(frozen=True, slots=True)
-    class UserDTO:               # light, detached, serializes straight to JSON
+    class TaskDTO:               # light, detached, serializes straight to JSON
         id: int
-        name: str                # renamed from the model column `full_name`
-        email: str
+        title: str
+        status: str
+        assignee_id: int | None
 
 
     @dataclass
-    class UserUpdate:
-        full_name: str | UnsetType = UNSET   # absent leaves it; None sets NULL
+    class TaskCreate:
+        workspace_id: int
+        title: str
 
 
-    class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
-        field_mapping = {"full_name": "name"}
+    @dataclass
+    class TaskUpdate:
+        title: str | UnsetType = UNSET            # absent leaves it; None sets NULL
+        status: str | UnsetType = UNSET
+        assignee_id: int | None | UnsetType = UNSET
+
+
+    class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
+        ...
     ```
 
-    Every method from the other tab now exists, typed against `UserDTO`, with no
+    Every method from the other tab now exists, typed against `TaskDTO`, with no
     further code.
 
 ## What you get
@@ -87,7 +100,7 @@ types it against your model and your return shape.
 
     ---
 
-    `repo.list()` is `list[UserDTO]`, and your editor knows it. No casts, no
+    `repo.list()` is `list[TaskDTO]`, and your editor knows it. No casts, no
     `Any`. The return value is the same object your API serializes.
 
 -   :material-filter-variant:{ .lg .middle } __Two ways to filter, one call__

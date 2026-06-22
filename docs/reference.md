@@ -31,8 +31,8 @@ ReadOnlyRepository[Model, DTO = Model, PK = int]
 `Model` is required. `DTO` defaults to the model itself (reads return the model,
 unhydrated). `Create` and `Update` are the payload dataclasses your writes
 accept. `PK` is the primary-key type, defaulting to `int`; declare it (last,
-after the others) when your key is a `str` or `uuid`. So `Repository[Account]`
-is a valid read/write repository returning `Account` with an `int` key, and you
+after the others) when your key is a `str` or `uuid`. So `Repository[Workspace]`
+is a valid read/write repository returning `Workspace` with an `int` key, and you
 add the other parameters only as you need them. See
 [primary keys](guides/primary-keys.md).
 
@@ -46,9 +46,9 @@ Set these on your repository subclass.
 | `pk_column`     | `str \| InstrumentedAttribute`  | primary-key column, by name or column reference | `"id"`  |
 
 ```python
-class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
-    field_mapping = {"full_name": "name"}
-    pk_column = User.id   # or "id"
+class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
+    field_mapping = {"created_at": "opened_at"}   # model column : DTO field
+    pk_column = Task.id   # or "id"
 ```
 
 ## Read methods

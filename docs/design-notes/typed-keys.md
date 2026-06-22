@@ -8,11 +8,11 @@ One question comes up often enough to deserve its own page: **why must I declare
 the key type as `PKT` when I already told the repository which column the key is?**
 
 ```python
-class AccountRepository(ReadOnlyRepository[Account, AccountDTO, str]):
-    pk_column = Account.account_id   # this is clearly a str... why repeat it?
+class PageRepository(ReadOnlyRepository[Page, PageDTO, str]):
+    pk_column = Page.url_hash   # this is clearly a str... why repeat it?
 ```
 
-The short answer: Python's type system cannot read the type of `Account.account_id`
+The short answer: Python's type system cannot read the type of `Page.url_hash`
 back into a generic parameter. The longer answer is a small tour of where Python's
 static typing stands today, and it is worth reading once, because it shapes more
 than just this library.
@@ -87,7 +87,7 @@ cannot drive the type, and both are working as designed:
 1. **A `ClassVar` cannot carry a type parameter** ([PEP 526](https://peps.python.org/pep-0526/)).
    You cannot stash `PKT` in `pk_column` and have the methods read it back.
 2. **Inheritance is resolved before the class body.** When the checker reads
-   `class AccountRepository(ReadOnlyRepository[Account, AccountDTO, str])`, the
+   `class PageRepository(ReadOnlyRepository[Page, PageDTO, str])`, the
    parameters are pinned at that line. A `pk_column = ...` assignment *inside* the
    body comes too late to influence them.
 
@@ -107,20 +107,20 @@ where every read hydrates the full DTO.
 
 ```python
 @dataclass(slots=True)
-class UserDTO:
+class TaskDTO:
     id: int
-    first_name: str
-    last_name: str
+    title: str
+    status: str
 
-repo.first()   # -> UserDTO, always all three columns
+repo.first()   # -> TaskDTO, always all three columns
 ```
 
-That is fine until you only need `first_name`. The query still selects every
+That is fine until you only need `title`. The query still selects every
 column, and the DTO still carries every field. You want to ask for a subset, and
 have the *type* narrow to match. Each attempt to express that ran into a wall:
 
-- **Make the DTO fields optional.** `first_name: str | None`, then check
-  `if dto.first_name is not None` everywhere. This poisons every call site with
+- **Make the DTO fields optional.** `title: str | None`, then check
+  `if dto.title is not None` everywhere. This poisons every call site with
   runtime `None`-checks for fields you *know* are present, the type lost the very
   information that made it useful.
 - **Use a `TypedDict` instead of a dataclass.** It models partial shapes, but a
@@ -136,7 +136,7 @@ The breakthrough was to stop trying to encode the shape in the *class* and encod
 it per *call*, with `__getitem__`:
 
 ```python
-repo[UserCard].first()   # SELECT first_name; returns UserCard, typed
+repo[TaskCard].first()   # SELECT title; returns TaskCard, typed
 ```
 
 `repo[Shape]` returns a lightweight clone of the repository bound to `Shape` for
@@ -148,7 +148,7 @@ mechanism are split across the two worlds that can each serve one of them. The
 [projection recipe](../guides/projection.md) covers it from the user's side.
 
 It is a small amount of extra code, and it buys the signature we wanted all
-along: `repo[UserCard].first(...) -> UserCard | None`. The alternatives we
+along: `repo[TaskCard].first(...) -> TaskCard | None`. The alternatives we
 weighed and rejected, currying (`repo.first(Shape)(...)`) or a `shape=` keyword
 argument, either traded one kind of boilerplate for another (a fan of
 `_FirstCurried` / `_ListCurried` protocols to keep the curried calls typed) or

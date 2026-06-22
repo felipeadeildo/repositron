@@ -8,6 +8,52 @@ Pagination is the place where a small oversight turns into a bug that only shows
 up in production, under load, for some users, some of the time. repositron is
 opinionated here on purpose.
 
+??? note "Setup"
+
+    ```python
+    from __future__ import annotations
+
+    from dataclasses import dataclass
+    from datetime import datetime
+
+    from sqlalchemy import DateTime, Integer, String
+    from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+
+    from repositron import Repository
+
+
+    class Base(DeclarativeBase): ...
+
+
+    class Task(Base):
+        __tablename__ = "tasks"
+
+        id: Mapped[int] = mapped_column(Integer, primary_key=True)
+        workspace_id: Mapped[int] = mapped_column(Integer)
+        title: Mapped[str] = mapped_column(String)
+        description: Mapped[str | None] = mapped_column(String, default=None)
+        status: Mapped[str] = mapped_column(String, default="open")  # open|in_progress|done
+        assignee_id: Mapped[int | None] = mapped_column(Integer, default=None)
+        created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+        archived_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+
+    @dataclass(frozen=True, slots=True)
+    class TaskDTO:
+        id: int
+        title: str
+        status: str
+        assignee_id: int | None
+
+
+    class TaskRepository(Repository[Task, TaskDTO, "TaskCreate", "TaskUpdate"]):
+        ORDER = [Task.created_at.desc(), Task.id]
+
+
+    session: Session = ...  # your SQLAlchemy session
+    repo = TaskRepository(session)
+    ```
+
 ## A page and its total
 
 `list_paginated` returns a `PaginatedResult`: the slice of rows for this page,
@@ -16,36 +62,90 @@ is what you need to compute how many pages there are, so it comes back in the
 same call rather than forcing a second one.
 
 ```python
-page = repo.list_paginated(offset=0, limit=20, order_by=User.id)
+page = repo.list_paginated(offset=0, limit=20, order_by=Task.created_at.desc())
 
-page.items   # list[UserDTO]  -> this page
+page.items   # list[TaskDTO]  -> this page
 page.total   # int            -> all matching rows, ignoring offset/limit
 ```
 
 It takes the same `extra_filters` and `**filters` as `list`, so filtering and
-paginating compose exactly the way you would expect:
+paginating compose exactly the way you would expect. Here we page through the
+open tasks in one workspace, newest first:
 
 ```python
+offset, limit = 0, 20
+
 page = repo.list_paginated(
     offset=offset,
     limit=limit,
-    is_active=True,
-    extra_filters=[User.created_at >= cutoff],
-    order_by=User.created_at.desc(),
+    workspace_id=42,
+    status="open",
+    order_by=repo.ORDER,
 )
+
+page.items   # list[TaskDTO]  -> up to 20 open tasks in workspace 42
+page.total   # int            -> every open task in workspace 42
 ```
 
 A typical service method wraps it and maps `total` into whatever your API's page
 envelope looks like:
 
 ```python
-def list_users(self, offset: int, limit: int, q: str | None = None):
-    extra = [self.repo.search(q)] if q else None
-    result = self.repo.list_paginated(
-        offset=offset, limit=limit, extra_filters=extra, order_by=self.repo.ORDER
+from repositron import PaginatedResult
+
+
+def list_open_tasks(self, workspace_id: int, offset: int, limit: int):
+    result: PaginatedResult[TaskDTO] = self.repo.list_paginated(
+        offset=offset,
+        limit=limit,
+        workspace_id=workspace_id,
+        status="open",
+        order_by=self.repo.ORDER,
     )
-    return Page(items=result.items, total=result.total, offset=offset, limit=limit)
+    return {
+        "items": result.items,
+        "total": result.total,
+        "offset": offset,
+        "limit": limit,
+    }
 ```
+
+## From a web request
+
+Most callers receive a `page`/`size` query and translate it into `offset`/`limit`.
+A FastAPI endpoint with the repository injected looks like this:
+
+```python hl_lines="19"
+from typing import Annotated
+
+from fastapi import Depends, FastAPI
+
+app = FastAPI()
+
+
+def get_repo(session: Annotated[Session, Depends(get_session)]) -> TaskRepository:
+    return TaskRepository(session)
+
+
+@app.get("/workspaces/{workspace_id}/tasks")
+def list_tasks(
+    workspace_id: int,
+    repo: Annotated[TaskRepository, Depends(get_repo)],
+    page: int = 1,
+    size: int = 20,
+):
+    result = repo.list_paginated(
+        offset=(page - 1) * size,
+        limit=size,
+        workspace_id=workspace_id,
+        status="open",
+        order_by=repo.ORDER,
+    )
+    return {"items": result.items, "total": result.total, "page": page, "size": size}
+```
+
+`get_repo` is your dependency-injection provider; `get_session` is whatever yields
+a request-scoped `Session`.
 
 ## Why order_by is required
 
@@ -53,8 +153,8 @@ Here is the part that is not optional. `list_paginated` will raise a `ValueError
 if you do not give it an `order_by`:
 
 ```python
-repo.list_paginated(0, 20)                     # ValueError
-repo.list_paginated(0, 20, order_by=User.id)   # fine
+repo.list_paginated(0, 20)                              # ValueError
+repo.list_paginated(0, 20, order_by=Task.created_at)    # fine
 ```
 
 This is deliberate. A database is free to return rows in any order when you do
@@ -69,7 +169,7 @@ session. Pick a stable order, ideally one that ends in a unique column like the
 primary key, and the problem cannot occur:
 
 ```python
-repo.list_paginated(0, 20, order_by=[User.created_at.desc(), User.id])
+repo.list_paginated(0, 20, order_by=[Task.created_at.desc(), Task.id])
 ```
 
 ## Pagination plays well with projection
@@ -78,8 +178,17 @@ Paginating a wide table while only showing a few columns is a natural pairing.
 Project first, then paginate, and you fetch only what the page renders:
 
 ```python
-page = repo[UserCard].list_paginated(0, 20, order_by=User.id)
-# SELECT only UserCard's columns, paginated -> PaginatedResult[UserCard]
+@dataclass(frozen=True, slots=True)
+class TaskCard:
+    id: int
+    title: str
+    status: str
+
+
+page = repo[TaskCard].list_paginated(
+    0, 20, workspace_id=42, status="open", order_by=repo.ORDER
+)
+# SELECT only TaskCard's columns, paginated -> PaginatedResult[TaskCard]
 ```
 
-See the [projection recipe](projection.md) for what `repo[UserCard]` does.
+See the [projection recipe](projection.md) for what `repo[TaskCard]` does.

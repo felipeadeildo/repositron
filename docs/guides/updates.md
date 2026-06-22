@@ -6,21 +6,70 @@ icon: lucide/pencil
 
 This is the feature people do not notice until the day it would have saved them.
 
+??? note "Setup"
+
+    ```python
+    from dataclasses import dataclass
+    from datetime import datetime
+
+    from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+    from repositron import UNSET, UnsetType, Repository
+
+
+    class Base(DeclarativeBase): ...
+
+
+    class Task(Base):
+        __tablename__ = "tasks"
+
+        id: Mapped[int] = mapped_column(primary_key=True)
+        workspace_id: Mapped[int]
+        title: Mapped[str]
+        description: Mapped[str | None]
+        status: Mapped[str] = mapped_column(default="open")
+        assignee_id: Mapped[int | None]
+        created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+        archived_at: Mapped[datetime | None]
+
+
+    @dataclass
+    class TaskCreate:
+        workspace_id: int
+        title: str
+        description: str | None | UnsetType = UNSET
+        assignee_id: int | None | UnsetType = UNSET
+
+
+    @dataclass
+    class TaskUpdate:
+        title: str | UnsetType = UNSET
+        status: str | UnsetType = UNSET
+        assignee_id: int | None | UnsetType = UNSET   # None means unassign
+
+
+    class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]): ...
+
+
+    repo = TaskRepository(session)
+    ```
+
 ## The blind spot in the usual pattern
 
 Almost every hand-written partial update looks like this:
 
 ```python
-if full_name is not None:
-    user.full_name = full_name
-if email is not None:
-    user.email = email
+if title is not None:
+    task.title = title
+if assignee_id is not None:
+    task.assignee_id = assignee_id
 ```
 
 It reads fine, and it is wrong in one specific way: it cannot set a column to
 `NULL`. "The caller did not mention this field" and "the caller wants this field
 cleared" both arrive as `None`, and the `is not None` guard collapses them into
-the same branch. To null a column on purpose you have to invent a second
+the same branch. There is no way through this code to unassign a task, set
+`assignee_id` back to `NULL`, because that intent and "leave the assignee alone"
+look identical. To null a column on purpose you have to invent a second
 convention, and now your update path has two ways to say "change nothing".
 
 ## Two sentinels, two meanings
@@ -41,17 +90,18 @@ from repositron import UNSET, UnsetType
 
 
 @dataclass
-class UserUpdate:
-    full_name: str | UnsetType = UNSET
-    email: str | None | UnsetType = UNSET   # None is a real, allowed value here
+class TaskUpdate:
+    title: str | UnsetType = UNSET
+    status: str | UnsetType = UNSET
+    assignee_id: int | None | UnsetType = UNSET   # None is a real, allowed value here
 ```
 
 Now the three outcomes are all expressible, and they read exactly as they mean:
 
-```python
-repo.update(1, UserUpdate(full_name="Ada"))   # email untouched
-repo.update(1, UserUpdate(email=None))          # email becomes NULL
-repo.update(1, UserUpdate())                    # a no-op write
+```python hl_lines="2"
+repo.update(1, TaskUpdate(status="done"))      # assignee untouched
+repo.update(1, TaskUpdate(assignee_id=None))   # unassign: assignee_id becomes NULL
+repo.update(1, TaskUpdate())                    # a no-op write
 ```
 
 Under the hood, `update` walks the payload's fields, skips any that are still
@@ -66,14 +116,15 @@ default (or the model's) take over instead of you hard-coding it in the payload:
 
 ```python
 @dataclass
-class UserCreate:
-    name: str
-    email: str
-    role: str | UnsetType = UNSET   # omit it -> the column default applies
+class TaskCreate:
+    workspace_id: int
+    title: str
+    description: str | None | UnsetType = UNSET   # omit it -> the column default applies
+    assignee_id: int | None | UnsetType = UNSET
 
 
-repo.create(UserCreate(name="Ada", email="ada@x.com"))   # role uses its default
-repo.create(UserCreate(name="Grace", email="g@x.com", role="admin"))
+repo.create(TaskCreate(workspace_id=1, title="Ship docs"))   # description uses its default
+repo.create(TaskCreate(workspace_id=1, title="Ship docs", description="for the v0.3 release"))
 ```
 
 This is handy at the boundary between an HTTP layer and the repository: an
@@ -81,10 +132,10 @@ optional request field that was not provided maps cleanly to `UNSET`, and the
 database fills in what it always would have.
 
 ```python
-payload = UserCreate(
-    name=name,
-    email=email,
-    role=role if role is not None else UNSET,
+payload = TaskCreate(
+    workspace_id=body.workspace_id,
+    title=body.title,
+    description=body.description if body.description is not None else UNSET,
 )
 ```
 
@@ -94,8 +145,9 @@ payload = UserCreate(
 so a missing record is an ordinary boolean to handle, not an exception to catch:
 
 ```python
-if not repo.update(user_id, UserUpdate(email=new_email)):
-    raise NotFound(user_id)
+# NotFound is your application's own exception, e.g. mapped to an HTTP 404.
+if not repo.update(task_id, TaskUpdate(status="done")):
+    raise NotFound(task_id)
 ```
 
 `delete` follows the same convention. `create` returns the new primary key.
@@ -107,11 +159,11 @@ transaction boundary stays in your app. Opt into committing per instance or per
 call.
 
 ```python
-repo = UserRepository(session, autocommit=True)   # every write commits
-repo.create(UserCreate(name="Ada"))
+repo = TaskRepository(session, autocommit=True)   # every write commits
+repo.create(TaskCreate(workspace_id=1, title="Ship docs"))
 
-job_id = deploy_repo.create(DeployJobCreate(...), commit=True)   # just this one
-deploy_worker.delay(job_id)   # a separate process only sees committed rows
+task_id = repo.create(TaskCreate(workspace_id=1, title="Index attachments"), commit=True)   # just this one
+worker.enqueue(task_id)   # a separate process only sees committed rows
 ```
 
 `commit=` overrides the instance default both ways.

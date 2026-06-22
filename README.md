@@ -37,10 +37,10 @@
 ---
 
 Every SQLAlchemy project rewrites the same repository layer: a class per table
-wrapping `session.query(...)`, the same `get` / `list` / `count`, the same
-pagination math, the same "turn the ORM row into something light to return". It
-is mechanical, easy to get subtly wrong, and you write it again for the next
-table.
+wrapping `select(...)` / `session.scalars(...)`, the same `get` / `list` /
+`count`, the same pagination math, the same "turn the ORM row into something
+light to return". It is mechanical, easy to get subtly wrong, and you write it
+again for the next table.
 
 repositron writes that layer once, generically. Declare a model (and optionally a
 DTO and write payloads), inherit one class, and get a fully typed repository,
@@ -52,41 +52,49 @@ from repositron import Repository, UNSET, UnsetType
 
 
 @dataclass(frozen=True, slots=True)
-class UserDTO:                 # light, detached, serializes straight to JSON
+class TaskDTO:                 # light, detached, serializes straight to JSON
     id: int
-    name: str                  # renamed from the model column `full_name`
-    email: str
+    title: str
+    status: str
+    assignee_id: int | None
 
 
 @dataclass
-class UserUpdate:
-    full_name: str | UnsetType = UNSET     # absent = leave alone; None = SET NULL
-    email: str | UnsetType = UNSET
+class TaskCreate:
+    workspace_id: int
+    title: str
 
 
-class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
-    field_mapping = {"full_name": "name"}   # the whole repository
+@dataclass
+class TaskUpdate:
+    title: str | UnsetType = UNSET            # absent = leave alone
+    status: str | UnsetType = UNSET
+    assignee_id: int | None | UnsetType = UNSET   # None = unassign (SET NULL)
+
+
+class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
+    pass                                       # the whole repository
 ```
 
 That is the whole repository. `get` / `first` / `list` / `list_paginated` /
 `count` / `exists` / `create` / `update` / `delete` all come for free, typed
-against `UserDTO`:
+against `TaskDTO`:
 
 ```python
-repo = UserRepository(session)
+repo = TaskRepository(session)
 
-repo.get(1)                                          # -> UserDTO | None
-repo.list(is_active=True, order_by=User.created_at.desc())   # -> list[UserDTO]
-repo.list_paginated(0, 20, order_by=User.created_at.desc())  # -> PaginatedResult[UserDTO]
-repo.create(UserCreate(full_name="Ada", email="ada@x.com"))  # -> int (new id)
-repo.update(1, UserUpdate(full_name="Ada L."))       # only that field; others untouched
+repo.get(1)                                              # -> TaskDTO | None
+repo.list(workspace_id=42, status="open", order_by=Task.created_at.desc())  # -> list[TaskDTO]
+repo.list_paginated(0, 20, order_by=Task.created_at.desc())  # -> PaginatedResult[TaskDTO]
+repo.create(TaskCreate(workspace_id=42, title="Ship the docs"))  # -> int (new id)
+repo.update(1, TaskUpdate(status="done"))               # only status; title untouched
 ```
 
 ## Why repositron
 
 **It cuts the layer you keep rewriting.** One generic base replaces the
 per-table CRUD class, and every method is typed off the generic parameters, so
-your editor knows `repo.list()` is `list[UserDTO]` and `repo.get(id)` is checked
+your editor knows `repo.list()` is `list[TaskDTO]` and `repo.get(id)` is checked
 against the key type you declared (`int`, `str`, `uuid.UUID`).
 
 **Two ways to filter, in one call.** Equality is keyed by attribute name,
@@ -95,13 +103,14 @@ means `IS NULL`; `UNSET` skips the filter, so optional query params pass straigh
 through without branching.
 
 ```python
-repo.list(is_active=True, extra_filters=[User.age > 18], order_by=User.id)
-# WHERE is_active = true AND age > 18 ORDER BY id
+repo.list(workspace_id=42, extra_filters=[Task.archived_at.is_(None)], order_by=Task.id)
+# WHERE workspace_id = 42 AND archived_at IS NULL ORDER BY id  (open, non-archived)
 ```
 
 **Updates that can actually write `NULL`.** `UNSET` means "leave this column
 alone", `None` means "set it to NULL", the distinction the hand-written
-`if x is not None` pattern silently loses.
+`if x is not None` pattern silently loses. `TaskUpdate(assignee_id=None)`
+unassigns a task; `TaskUpdate(status="done")` leaves the assignee untouched.
 
 **Projection that is real column selection.** Index the repo with a narrow shape
 and it narrows the `SELECT` itself, it does not fetch the row and drop fields. The
@@ -109,13 +118,15 @@ injected repository is untouched, the projection lasts only for the call.
 
 ```python
 @dataclass(frozen=True, slots=True)
-class UserCard:
+class TaskCard:
     id: int
-    name: str
+    title: str
+    status: str
 
-repo[UserCard].list(is_active=True)
-# SELECT users.id, users.full_name FROM users WHERE is_active = true
-#   -> list[UserCard]   (only those two columns ever leave the database)
+repo[TaskCard].list(workspace_id=42, status="open")
+# SELECT tasks.id, tasks.title, tasks.status FROM tasks
+#   WHERE workspace_id = 42 AND status = 'open'
+#   -> list[TaskCard]   (only those three columns ever leave the database)
 ```
 
 **Extend without overriding.** [Hooks](https://repositron.fa.dev.br/guides/hooks/)

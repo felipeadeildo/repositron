@@ -36,7 +36,7 @@ narrowed to exactly that subset, no optional fields you have to null-check, no
 full object you have to ignore half of. It leans on TypeScript's indexed access
 types to prove the subset relationship statically. Python's type system can't
 prove that part (see [typed primary keys](typed-keys.md) for why), so repositron
-keeps the *ergonomics* of Prisma's partial selects, `repo[UserCard].list()`,
+keeps the *ergonomics* of Prisma's partial selects, `repo[TaskCard].list()`,
 and accepts a runtime check where Prisma gets a static one. The idea is Prisma's;
 the seam is ours.
 

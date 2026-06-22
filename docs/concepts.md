@@ -11,10 +11,10 @@ Python, but it is worth pinning down what each means so the rest reads cleanly.
 ## The repository pattern
 
 A **repository** is the one object that knows how to read and write a given kind
-of record. Instead of scattering `session.query(User)...` across your routes,
-services, and scripts, you put that logic behind a `UserRepository` and call
-`repo.get(1)` or `repo.list(is_active=True)`. The rest of your code asks for what
-it wants and never touches the database directly.
+of record. Instead of scattering `select(Task)...` across your routes, services,
+and scripts, you put that logic behind a `TaskRepository` and call `repo.get(1)`
+or `repo.list(status="open")`. The rest of your code asks for what it wants and
+never touches the database directly.
 
 The point is a seam. On one side, your application speaks in domain terms
 (`repo.create(...)`, `repo.list(...)`); on the other, the repository speaks SQL.
@@ -31,17 +31,22 @@ base uses.
 
 ## Model
 
-The **model** is your SQLAlchemy mapped class, the `User`, `Article`, or `Order`
-with `Mapped[...]` columns that maps to a table. It is the source of truth for
-the schema, and repositron reads everything it needs (columns, the primary key)
-off it. You already have models; repositron does not replace them.
+The **model** is your SQLAlchemy mapped class, the `Task`, `Workspace`, or
+`Member` with `Mapped[...]` columns that maps to a table. It is the source of
+truth for the schema, and repositron reads everything it needs (columns, the
+primary key) off it. You already have models; repositron does not replace them.
 
 ```python
-class User(Base):
-    __tablename__ = "users"
+class Task(Base):
+    __tablename__ = "tasks"
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str]
-    email: Mapped[str | None]
+    workspace_id: Mapped[int]
+    title: Mapped[str]
+    description: Mapped[str | None]
+    status: Mapped[str]
+    assignee_id: Mapped[int | None]
+    created_at: Mapped[datetime]
+    archived_at: Mapped[datetime | None]
 ```
 
 ## DTO
@@ -57,9 +62,11 @@ way, your editor knows the return type.
 
 ```python
 @dataclass(frozen=True, slots=True)
-class UserDTO:
+class TaskDTO:
     id: int
-    name: str
+    title: str
+    status: str
+    assignee_id: int | None
 ```
 
 The DTO is an optimization, not a requirement, [choosing a
@@ -81,16 +88,17 @@ itself with a [`build` hook](guides/hooks.md#replacing-the-build).
 ## Payload
 
 A **payload** is the shape a repository *accepts* on a write. Reads return a DTO;
-writes take a payload, a `UserCreate` for `create`, a `UserUpdate` for `update`.
+writes take a payload, a `TaskCreate` for `create`, a `TaskUpdate` for `update`.
 Keeping them separate from the DTO means a create can require different fields
 than a read returns, and an update can express "leave this field alone" as
 distinct from "set it to NULL" (see [updating rows](guides/updates.md)).
 
 ```python
 @dataclass
-class UserCreate:
-    name: str
-    email: str | None = None
+class TaskCreate:
+    workspace_id: int
+    title: str
+    description: str | None = None
 ```
 
 ## Primary key
@@ -105,14 +113,14 @@ keys](guides/primary-keys.md) covers why those are two knobs and not one.
 ## Projection
 
 **Projection** is reading only some columns instead of the whole row. A list
-endpoint that shows a name and an avatar does not need the bio, the settings
-blob, and the timestamps. With `repo[Shape]`, repositron selects only the columns
+endpoint that shows a title and a status does not need the description, the
+assignee, and the timestamps. With `repo[Shape]`, repositron selects only the columns
 that narrow `Shape` declares and returns that shape, for that one call, the
 database ships less and you get back exactly what you asked for. See [projecting
 columns](guides/projection.md).
 
 ```python
-repo[UserCard].list()   # SELECT id, name  ->  list[UserCard]
+repo[TaskCard].list()   # SELECT id, title, status  ->  list[TaskCard]
 ```
 
 ---

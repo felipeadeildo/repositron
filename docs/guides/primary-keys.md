@@ -14,12 +14,60 @@ Out of the box, a repository assumes the key column is named `id` and holds an
 `int`. Every id-based method, `get`, `update`, `delete`, `exists`, is typed to
 take an `int`, and `create` returns one:
 
+??? note "Setup"
+
+    The baseline is the task-tracker `Task` model and its repository. The
+    key-type sections further down define their own models, since the page is
+    about keys that are not this default.
+
+    ```python
+    from __future__ import annotations
+
+    from dataclasses import dataclass
+
+    from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+    from repositron import ReadOnlyRepository, Repository, UNSET, UnsetType
+
+
+    class Base(DeclarativeBase): ...
+
+
+    class Task(Base):
+        __tablename__ = "tasks"
+
+        id: Mapped[int] = mapped_column(primary_key=True)
+        workspace_id: Mapped[int]
+        title: Mapped[str]
+        status: Mapped[str] = mapped_column(default="open")
+
+
+    @dataclass
+    class TaskDTO:
+        id: int
+        title: str
+        status: str
+
+
+    @dataclass
+    class TaskCreate:
+        workspace_id: int
+        title: str
+
+
+    @dataclass
+    class TaskUpdate:
+        title: str | UnsetType = UNSET
+        status: str | UnsetType = UNSET
+
+
+    class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]): ...
+    ```
+
 ```python
-class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
-    pass
+repo = TaskRepository(session)
 
-
-repo.get(1)          # UserDTO | None
+repo.get(1)          # TaskDTO | None
 repo.exists(1)       # bool
 repo.get("1")        # type error: expected int, got str
 ```
@@ -35,43 +83,76 @@ When the key is a `str`, a `uuid`, or anything else, declare its type as the
 **last** type parameter. The slot is named `PKT` and it sits after the others so
 the common case never has to mention it.
 
-On a read-only repository it is the third parameter:
+On a read-only repository it is the third parameter. A `Page` cache, keyed by
+the hash of a fetched URL, is a natural `str` key:
 
 ```python
-class AccountRepository(ReadOnlyRepository[Account, AccountDTO, str]):
-    pk_column = "account_id"
+class Page(Base):
+    __tablename__ = "pages"
+
+    url_hash: Mapped[str] = mapped_column(primary_key=True)
+    html: Mapped[str]
 
 
-repo.get("acct_123")   # AccountDTO | None
-repo.get(123)          # type error: expected str, got int
-```
+@dataclass
+class PageDTO:
+    url_hash: str
+    html: str
 
-On a full-CRUD `Repository` it is the fifth, after `Create` and `Update`:
 
-```python
-class SessionRepository(
-    Repository[Session, SessionDTO, SessionCreate, SessionUpdate, str]
-):
+class PageRepository(ReadOnlyRepository[Page, PageDTO, str]):
     pk_column = "url_hash"
 
 
-sid = repo.create(SessionCreate(...))   # str
-repo.delete("abc-def")                  # bool
+repo.get("a1b2c3")   # PageDTO | None
+repo.get(123)        # type error: expected str, got int
 ```
 
-A `uuid` key is no different, name `uuid.UUID` as the type:
+A `uuid` key on a full-CRUD repository is no different, name `uuid.UUID` as the
+type. An API token keyed by a generated `token_id` is the typical case:
 
 ```python
-class TokenRepository(Repository[Token, TokenDTO, TokenCreate, TokenUpdate, uuid.UUID]):
+import uuid
+
+
+class ApiToken(Base):
+    __tablename__ = "api_tokens"
+
+    token_id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    workspace_id: Mapped[int]
+    label: Mapped[str]
+
+
+@dataclass
+class ApiTokenDTO:
+    token_id: uuid.UUID
+    label: str
+
+
+@dataclass
+class ApiTokenCreate:
+    workspace_id: int
+    label: str
+
+
+@dataclass
+class ApiTokenUpdate:
+    label: str | UnsetType = UNSET
+
+
+class ApiTokenRepository(
+    Repository[ApiToken, ApiTokenDTO, ApiTokenCreate, ApiTokenUpdate, uuid.UUID]
+):
     pk_column = "token_id"
 
 
-repo.get(uuid.uuid4())   # TokenDTO | None
+tid = repo.create(ApiTokenCreate(workspace_id=1, label="ci"))   # uuid.UUID
+repo.get(tid)                                                   # ApiTokenDTO | None
 ```
 
 !!! note "Why the type is declared and not inferred"
 
-    You might expect `pk_column = Account.account_id` to tell the checker the key
+    You might expect `pk_column = Page.url_hash` to tell the checker the key
     is a `str` on its own. It cannot: Python has no way to read the type of a
     class attribute back into a generic parameter. The honest, checkable place to
     state it is the type parameter. The [typed primary keys](../design-notes/typed-keys.md)
@@ -84,16 +165,37 @@ before it. If a CRUD repository has real `Create`/`Update` payloads, declare
 them, that is the honest signature anyway:
 
 ```python
-Repository[Session, SessionDTO, SessionCreate, SessionUpdate, str]
+Repository[ApiToken, ApiTokenDTO, ApiTokenCreate, ApiTokenUpdate, uuid.UUID]
 ```
 
 Padding the payload slots with `object` only makes sense when you genuinely
-don't use `create`/`update`, for example a repository you keep only for
-`delete`:
+don't use `create`/`update`. An append-only `AuditEntry` is written once and
+never updated, so it has no update payload and the slot is padded:
 
 ```python
-# only delete() is ever called, so Create/Update stay untyped
-class PurgeRepository(Repository[Audit, Audit, object, object, str]):
+class AuditEntry(Base):
+    __tablename__ = "audit_entries"
+
+    trace_id: Mapped[str] = mapped_column(primary_key=True)
+    action: Mapped[str]
+
+
+@dataclass
+class AuditEntryDTO:
+    trace_id: str
+    action: str
+
+
+@dataclass
+class AuditEntryCreate:
+    trace_id: str
+    action: str
+
+
+# entries are created and read, never updated, so Update stays untyped
+class AuditEntryRepository(
+    Repository[AuditEntry, AuditEntryDTO, AuditEntryCreate, object, str]
+):
     pk_column = "trace_id"
 ```
 
@@ -102,14 +204,15 @@ for `object`.
 
 ## When the key is not called `id`
 
-Independent of its type, point `pk_column` at the right column. Two forms work:
+Independent of its type, point `pk_column` at the right column. Reusing the
+`Page` cache from above, two forms work:
 
 ```python
-class PageRepository(Repository[Page, PageDTO, ..., ..., str]):
+class PageRepository(ReadOnlyRepository[Page, PageDTO, str]):
     pk_column = "url_hash"      # by name
 
 
-class PageRepository(Repository[Page, PageDTO, ..., ..., str]):
+class PageRepository(ReadOnlyRepository[Page, PageDTO, str]):
     pk_column = Page.url_hash   # by column reference
 ```
 
@@ -134,7 +237,10 @@ ordinary attribute, so you can filter on it through the normal channels when you
 want a query rather than a single fetch:
 
 ```python
-repo.list(extra_filters=[Page.url_hash.in_(hashes)])
+repo.get("a1b2c3")     # one PageDTO | None, keyed lookup
+
+hashes = ["a1b2c3", "d4e5f6", "789abc"]
+repo.list(extra_filters=[Page.url_hash.in_(hashes)])   # list[PageDTO]
 ```
 
 That returns a list, where `get` returns one. Reach for whichever matches what
@@ -144,13 +250,38 @@ you actually need.
 
 repositron's id-based methods assume a single key column. A table with a
 composite primary key still works as a repository; you simply do not use `get` /
-`update(id, ...)` / `delete(id)` against it. Filter on the key columns and add
-your own methods for the writes:
+`update(id, ...)` / `delete(id)` against it. A `Membership` association keyed by
+`(workspace_id, member_id)` is the classic shape. Filter on the key columns and
+add your own methods for the lookups:
 
 ```python
+from sqlalchemy import select
+
+
+class Membership(Base):
+    __tablename__ = "memberships"
+
+    workspace_id: Mapped[int] = mapped_column(primary_key=True)
+    member_id: Mapped[int] = mapped_column(primary_key=True)
+    role: Mapped[str] = mapped_column(default="member")
+
+
+@dataclass
+class MembershipDTO:
+    workspace_id: int
+    member_id: int
+    role: str
+
+
 class MembershipRepository(Repository[Membership, MembershipDTO]):
-    def get(self, user_id: int, org_id: int) -> MembershipDTO | None:
-        return self.first(user_id=user_id, organization_id=org_id)
+
+    def get(self, workspace_id: int, member_id: int) -> MembershipDTO | None:
+        model = self.session.scalars(
+            select(Membership)
+            .where(Membership.workspace_id == workspace_id)
+            .where(Membership.member_id == member_id)
+        ).first()
+        return self._hydrate(model) if model is not None else None
 ```
 
 The read and filter machinery, `list`, `first`, `count`, `extra_filters`,
