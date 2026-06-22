@@ -63,14 +63,25 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
     pk_column: ClassVar[str | InstrumentedAttribute] = "id"
     """Primary-key column, as an attribute name (`"url_hash"`) or a column reference (`User.id`)."""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        autocommit: bool = False,
+        rollback_on_error: bool = True,
+    ) -> None:
         """
         Args:
-            session: Caller-owned session. The repository never opens or closes it,
-                and reads never write; `Repository` writes `flush` (commit is opt-in).
+            session: Caller-owned session. The repository never opens or closes it.
+            autocommit: When True, every write commits after its flush. Default False keeps the
+                transaction boundary in the caller's hands.
+            rollback_on_error: When True (default), a failed flush or commit rolls the session
+                back before re-raising. Set False to leave the rollback to you.
 
         """
         self.session = session
+        self.autocommit = autocommit
+        self.rollback_on_error = rollback_on_error
         self._active_dto: type | None = None
         """DTO bound via `__getitem__` (call-site override); None uses the class default."""
 
@@ -91,6 +102,23 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         """Run each hook for `event`/`mode` as a side effect, ignoring returns."""
         for hook in self._hooks_for(event, mode):
             hook(*args)
+
+    def _flush(self) -> None:
+        self._run(self.session.flush)
+
+    def _commit(self, commit: bool | None) -> None:
+        """Commit if `commit` is True, or None and `autocommit` is on."""
+        if commit if commit is not None else self.autocommit:
+            self._run(self.session.commit)
+
+    def _run[R](self, op: Callable[[], R]) -> R:
+        """Run `op`, rolling back on error when `rollback_on_error` is set, and return its result."""  # noqa: E501
+        try:
+            return op()
+        except Exception:
+            if self.rollback_on_error:
+                self.session.rollback()
+            raise
 
     @classmethod
     def _extract_type_arg(cls, index: int) -> type | None:
@@ -412,7 +440,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         return self.session.scalar(stmt) is not None
 
 
-def writes[T: "Repository", **P, R](
+def writes[T: ReadOnlyRepository, **P, R](
     method: Callable[Concatenate[T, P], R],
 ) -> Callable[Concatenate[T, P], R]:
     """
@@ -485,47 +513,10 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
     with `@writes` to get the same flush/commit/rollback.
     """
 
-    def __init__(
-        self,
-        session: Session,
-        *,
-        autocommit: bool = False,
-        rollback_on_error: bool = True,
-    ) -> None:
-        """
-        Args:
-            session: Caller-owned session. Never opened or closed by the repository.
-            autocommit: When True, every write commits after its flush. Default False keeps the
-                transaction boundary in the caller's hands.
-            rollback_on_error: When True (default), a failed flush or commit rolls the session
-                back before re-raising. Set False to leave the rollback to you.
-
-        """
-        super().__init__(session)
-        self.autocommit = autocommit
-        self.rollback_on_error = rollback_on_error
-
     def _get_model(self, id: PKT) -> ModelT | None:
         """Load the mapped instance by primary key, for an in-place update or delete."""
         stmt = select(self.model_class).where(self._pk_col == id)
         return self.session.scalars(stmt).first()
-
-    def _flush(self) -> None:
-        self._run(self.session.flush)
-
-    def _commit(self, commit: bool | None) -> None:
-        """Commit if `commit` is True, or None and `autocommit` is on."""
-        if commit if commit is not None else self.autocommit:
-            self._run(self.session.commit)
-
-    def _run[R](self, op: Callable[[], R]) -> R:
-        """Run `op`, rolling back on error when `rollback_on_error` is set, and return its result."""  # noqa: E501
-        try:
-            return op()
-        except Exception:
-            if self.rollback_on_error:
-                self.session.rollback()
-            raise
 
     def create(self, payload: CreateT, *, commit: bool | None = None) -> PKT:
         """

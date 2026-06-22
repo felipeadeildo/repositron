@@ -81,11 +81,13 @@ Available on both `ReadOnlyRepository` and `Repository`.
 ## Constructor
 
 `Repository(session, *, autocommit=False, rollback_on_error=True)`
+`ReadOnlyRepository(session, *, autocommit=False, rollback_on_error=True)`
 :   `session` is the caller-owned SQLAlchemy `Session`. With `autocommit=True`,
     every write commits after its flush; the default flushes only and leaves the
     transaction to you. `rollback_on_error` (`True` by default) rolls the session
     back before re-raising when a flush or commit fails; set it to `False` to
-    leave that rollback to you. See
+    leave that rollback to you. Both bases take these: a `ReadOnlyRepository` has
+    no automatic writes, but they govern any `@writes` method it hosts. See
     [transactions](guides/updates.md#transactions).
 
 ## Write methods
@@ -141,9 +143,11 @@ others all run, base classes before subclasses.
 ## `@writes`
 
 `@writes` on a custom write method runs it through the repository's flush,
-commit, and rollback, so the body only does session work. The method may declare
-`*, commit: bool | None = None` to expose the per-call override; without it the
-write flushes (and commits if `autocommit=True`). See
+commit, and rollback, so the body only does session work. It works on both
+`Repository` and `ReadOnlyRepository`, so a read-mostly repository can still own
+an occasional hand-written write. The method may declare `*, commit: bool | None
+= None` to expose the per-call override; without it the write flushes (and commits
+if `autocommit=True`). See
 [transactions on custom writes](guides/custom-queries.md#writes).
 
 ## Filter values

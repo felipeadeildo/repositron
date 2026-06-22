@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, PendingRollbackError
 from sqlalchemy.orm import Session
 
-from repositron import UNSET, Repository, writes
+from repositron import UNSET, ReadOnlyRepository, Repository, writes
 
 
 def _fetch(session: Session, uid: int) -> User:
@@ -171,3 +171,30 @@ def test_writes_rolls_back_on_error(session: Session):
         repo.bad()
     # default rollback_on_error left the session usable
     assert session.scalar(select(User)) is None
+
+
+# --- @writes on a ReadOnlyRepository -----------------------------------------
+
+
+class ReadMostlyRepo(ReadOnlyRepository[User, User]):
+    """Read-only CRUD surface, but owns one hand-written write via @writes."""
+
+    @writes
+    def rename(self, id: int, name: str, *, commit: bool | None = None) -> None:
+        user = self.session.get(User, id)
+        if user is not None:
+            user.name = name
+
+
+def _seed_one(session: Session) -> int:
+    user = User(name="orig")
+    session.add(user)
+    session.flush()
+    return user.id
+
+
+def test_writes_runs_on_read_only_repo(session: Session):
+    # The issue: @writes on a ReadOnlyRepository raised AttributeError on _run.
+    uid = _seed_one(session)
+    ReadMostlyRepo(session).rename(uid, "renamed")  # must not raise
+    assert _fetch(session, uid).name == "renamed"  # the write flushed
