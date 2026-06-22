@@ -13,7 +13,8 @@ from dataclasses import fields, is_dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, Concatenate, cast, get_args, get_origin
 
-from sqlalchemy.orm import InstrumentedAttribute, Query, Session
+from sqlalchemy import Select, func, select
+from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from repositron.base import (
@@ -190,8 +191,8 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         extra_filters: _list[ColumnElement[bool]] | None,
         order_by: OrderBy,
         **filters: FilterValue,
-    ) -> Query:
-        """Build the column-projection query for a dataclass `dto` (rows in field order)."""
+    ) -> Select:
+        """Build the column-projection statement for a dataclass `dto` (rows in field order)."""
         return self._select(
             *self._project_columns(dto),
             extra_filters=extra_filters,
@@ -256,11 +257,11 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
 
     def _apply_filters(
         self,
-        query: Query,
+        stmt: Select,
         *,
         extra_filters: _list[ColumnElement[bool]] | None = None,
         **filters: FilterValue,
-    ) -> Query:
+    ) -> Select:
         """
         Apply equality `**filters` and arbitrary `extra_filters` (see class docstring).
 
@@ -273,18 +274,18 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
                 continue
             if not hasattr(self.model_class, key):
                 raise ValueError(f"{self.model_class.__name__} has no attribute '{key}'")
-            query = query.filter(getattr(self.model_class, key) == value)
+            stmt = stmt.where(getattr(self.model_class, key) == value)
         if extra_filters:
-            query = query.filter(*extra_filters)
-        return query
+            stmt = stmt.where(*extra_filters)
+        return stmt
 
-    def _apply_order(self, query: Query, order_by: OrderBy = None) -> Query:
-        """Apply `order_by` to a query; `None` leaves it unordered."""
+    def _apply_order(self, stmt: Select, order_by: OrderBy = None) -> Select:
+        """Apply `order_by` to a statement; `None` leaves it unordered."""
         if order_by is None:
-            return query
+            return stmt
         if isinstance(order_by, list):
-            return query.order_by(*order_by)
-        return query.order_by(order_by)
+            return stmt.order_by(*order_by)
+        return stmt.order_by(order_by)
 
     def _select(
         self,
@@ -292,11 +293,11 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         extra_filters: _list[ColumnElement[bool]] | None = None,
         order_by: OrderBy = None,
         **filters: FilterValue,
-    ) -> Query:
-        """Build a query (over `columns`, or the whole model if none) with filters and order applied."""  # noqa: E501
-        target = self.session.query(*columns) if columns else self.session.query(self.model_class)
-        target = self._apply_filters(target, extra_filters=extra_filters, **filters)
-        return self._apply_order(target, order_by=order_by)
+    ) -> Select:
+        """Build a SELECT (over `columns`, or the whole model if none) with filters and order applied."""  # noqa: E501
+        stmt = select(*columns) if columns else select(self.model_class)
+        stmt = self._apply_filters(stmt, extra_filters=extra_filters, **filters)
+        return self._apply_order(stmt, order_by=order_by)
 
     def _projecting(self) -> type | None:
         """
@@ -325,11 +326,11 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         """Fetch the first matching record, hydrated to the active DTO, or None."""
         dto = self._projecting()
         if dto is not None:
-            row = self._project(
-                dto, extra_filters=extra_filters, order_by=order_by, **filters
-            ).first()
+            stmt = self._project(dto, extra_filters=extra_filters, order_by=order_by, **filters)
+            row = self.session.execute(stmt).first()
             return cast("DTOT", dto(*row)) if row is not None else None
-        model = self._select(extra_filters=extra_filters, order_by=order_by, **filters).first()
+        stmt = self._select(extra_filters=extra_filters, order_by=order_by, **filters)
+        model = self.session.scalars(stmt).first()
         if model is None:
             return None
         return self._hydrate_one(model)
@@ -344,13 +345,12 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         """List records matching the filters, each hydrated to the active DTO."""
         dto = self._projecting()
         if dto is not None:
-            rows = self._project(
-                dto, extra_filters=extra_filters, order_by=order_by, **filters
-            ).all()
+            stmt = self._project(dto, extra_filters=extra_filters, order_by=order_by, **filters)
+            rows = self.session.execute(stmt).all()
             # Rows come back in the DTO's field order (see _project_columns); build positionally.
             return cast("_list[DTOT]", [dto(*row) for row in rows])
-        models = self._select(extra_filters=extra_filters, order_by=order_by, **filters).all()
-        return [self._hydrate_one(m) for m in models]
+        stmt = self._select(extra_filters=extra_filters, order_by=order_by, **filters)
+        return [self._hydrate_one(m) for m in self.session.scalars(stmt).all()]
 
     def list_paginated(
         self,
@@ -378,15 +378,23 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
             )
         dto = self._projecting()
         if dto is not None:
-            query = self._project(dto, extra_filters=extra_filters, order_by=order_by, **filters)
-            total = query.order_by(None).count()
-            rows = query.offset(offset).limit(limit).all()
+            stmt = self._project(dto, extra_filters=extra_filters, order_by=order_by, **filters)
+            total = self._count_stmt(stmt)
+            rows = self.session.execute(stmt.offset(offset).limit(limit)).all()
             items = cast("_list[DTOT]", [dto(*row) for row in rows])
             return PaginatedResult(items=items, total=total)
-        query = self._select(extra_filters=extra_filters, order_by=order_by, **filters)
-        total = query.order_by(None).count()
-        models = query.offset(offset).limit(limit).all()
+        stmt = self._select(extra_filters=extra_filters, order_by=order_by, **filters)
+        total = self._count_stmt(stmt)
+        models = self.session.scalars(stmt.offset(offset).limit(limit)).all()
         return PaginatedResult(items=[self._hydrate_one(m) for m in models], total=total)
+
+    def _count_stmt(self, stmt: Select) -> int:
+        """Total rows the statement would return, ignoring its order/offset/limit."""
+        # Wrap the filtered statement as a subquery so the count is correct through
+        # joins, DISTINCT, or column projection; drop ORDER BY since it can't appear
+        # under COUNT without being selected.
+        subq = stmt.order_by(None).subquery()
+        return self.session.scalar(select(func.count()).select_from(subq)) or 0
 
     def count(
         self,
@@ -395,13 +403,13 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         **filters: FilterValue,
     ) -> int:
         """Count records matching the filters."""
-        query = self.session.query(self._pk_col)
-        query = self._apply_filters(query, extra_filters=extra_filters, **filters)
-        return query.count()
+        stmt = self._apply_filters(select(self._pk_col), extra_filters=extra_filters, **filters)
+        return self._count_stmt(stmt)
 
     def exists(self, id: PKT) -> bool:
         """Check whether a record with this primary key exists."""
-        return self.session.query(self._pk_col).filter(self._pk_col == id).first() is not None
+        stmt = select(self._pk_col).where(self._pk_col == id).limit(1)
+        return self.session.scalar(stmt) is not None
 
 
 def writes[T: "Repository", **P, R](
@@ -497,6 +505,11 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
         self.autocommit = autocommit
         self.rollback_on_error = rollback_on_error
 
+    def _get_model(self, id: PKT) -> ModelT | None:
+        """Load the mapped instance by primary key, for an in-place update or delete."""
+        stmt = select(self.model_class).where(self._pk_col == id)
+        return self.session.scalars(stmt).first()
+
     def _flush(self) -> None:
         self._run(self.session.flush)
 
@@ -551,7 +564,7 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
             True on success, False if no record has that primary key.
 
         """
-        model = self.session.query(self.model_class).filter(self._pk_col == id).first()
+        model = self._get_model(id)
         if model is None:
             return False
         for f in fields(cast("DataclassInstance", payload)):
@@ -573,7 +586,7 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
             True on success, False if no record has that primary key.
 
         """
-        model = self.session.query(self.model_class).filter(self._pk_col == id).first()
+        model = self._get_model(id)
         if model is None:
             return False
         self._emit("delete", "before", model)
