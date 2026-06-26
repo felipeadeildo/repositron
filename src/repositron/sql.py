@@ -12,7 +12,7 @@ from dataclasses import fields, is_dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, get_origin
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import CursorResult, Select, delete, func, select, update
 from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -475,6 +475,16 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
         stmt = select(self.model_class).where(self._pk_col == id)
         return self.session.scalars(stmt).first()
 
+    def _model_from_payload(self, payload: CreateT) -> ModelT:
+        """Build a model instance from a dataclass payload, skipping UNSET fields."""
+        kwargs = {
+            f.name: getattr(payload, f.name)
+            for f in fields(cast("DataclassInstance", payload))
+            if hasattr(self.model_class, f.name)
+            and not isinstance(getattr(payload, f.name), UnsetType)
+        }
+        return self.model_class(**kwargs)
+
     def create(self, payload: CreateT, *, commit: bool | None = None) -> PKT:
         """
         Insert a record from a dataclass payload and flush.
@@ -486,13 +496,7 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
             The new primary-key value, read back after the flush.
 
         """
-        kwargs = {
-            f.name: getattr(payload, f.name)
-            for f in fields(cast("DataclassInstance", payload))
-            if hasattr(self.model_class, f.name)
-            and not isinstance(getattr(payload, f.name), UnsetType)
-        }
-        model = self.model_class(**kwargs)
+        model = self._model_from_payload(payload)
         self._emit("create", "before", model, payload)
         self.session.add(model)
         self._flush()
@@ -543,3 +547,85 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
         self._emit("delete", "after", model)
         self._commit(commit)
         return True
+
+    def bulk_create(
+        self, payloads: _list[CreateT], *, hooks: bool = False, commit: bool | None = None
+    ) -> _list[PKT]:
+        """
+        Insert many records from dataclass payloads in one flush; return their primary keys.
+
+        UNSET fields are omitted per payload (as `create`). By default this is a
+        set-based fast path that fires no `@on("create", ...)` hooks. Pass
+        `hooks=True` to run the per-row create hooks (before each add, after the
+        flush) at the cost of the loop, when a payload needs them.
+
+        Returns:
+            The new primary-key values, in payload order, read back after the flush.
+
+        """
+        models = [self._model_from_payload(p) for p in payloads]
+        if hooks:
+            for model, payload in zip(models, payloads, strict=True):
+                self._emit("create", "before", model, payload)
+        self.session.add_all(models)
+        self._flush()
+        if hooks:
+            for model in models:
+                self._emit("create", "after", model)
+        self._commit(commit)
+        return [getattr(m, self._pk_col.key) for m in models]
+
+    def update_where(
+        self,
+        *extra_filters: ColumnElement[bool],
+        commit: bool | None = None,
+        **values: object,
+    ) -> int:
+        """
+        Bulk-UPDATE every row matching the filters; return the number of rows changed.
+
+        Set-based: no model is loaded and no `@on("update", ...)` hook fires. Pass
+        the new column values as keyword arguments and the row filters as
+        positional expressions, e.g.
+        `repo.update_where(Model.target_id == tid, is_active=False)`.
+
+        Raises:
+            ValueError: if called with no filters (a guard against updating the whole table).
+
+        """
+        if not extra_filters:
+            raise ValueError(
+                "update_where requires at least one filter (refusing a full-table update)"
+            )
+        stmt = (
+            update(self.model_class)
+            .where(*extra_filters)
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        result = self._run(lambda: self.session.execute(stmt))
+        self._commit(commit)
+        return cast("CursorResult[object]", result).rowcount
+
+    def delete_where(self, *extra_filters: ColumnElement[bool], commit: bool | None = None) -> int:
+        """
+        Bulk-DELETE every row matching the filters; return the number of rows deleted.
+
+        Set-based: no model is loaded and no `@on("delete", ...)` hook fires.
+
+        Raises:
+            ValueError: if called with no filters (a guard against emptying the table).
+
+        """
+        if not extra_filters:
+            raise ValueError(
+                "delete_where requires at least one filter (refusing a full-table delete)"
+            )
+        stmt = (
+            delete(self.model_class)
+            .where(*extra_filters)
+            .execution_options(synchronize_session=False)
+        )
+        result = self._run(lambda: self.session.execute(stmt))
+        self._commit(commit)
+        return cast("CursorResult[object]", result).rowcount
