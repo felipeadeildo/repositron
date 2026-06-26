@@ -282,6 +282,23 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
             dto = cast("DTOT", hook(model, dto))
         return dto
 
+    def _filter_clauses(self, **filters: FilterValue) -> _list[ColumnElement[bool]]:
+        """
+        Translate equality `**filters` into WHERE clauses, skipping UNSET values.
+
+        Raises:
+            ValueError: if a `**filters` key is not a model attribute.
+
+        """
+        clauses: _list[ColumnElement[bool]] = []
+        for key, value in filters.items():
+            if isinstance(value, UnsetType):
+                continue
+            if not hasattr(self.model_class, key):
+                raise ValueError(f"{self.model_class.__name__} has no attribute '{key}'")
+            clauses.append(getattr(self.model_class, key) == value)
+        return clauses
+
     def _apply_filters(
         self,
         stmt: Select,
@@ -296,12 +313,9 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
             ValueError: if a `**filters` key is not a model attribute.
 
         """
-        for key, value in filters.items():
-            if isinstance(value, UnsetType):
-                continue
-            if not hasattr(self.model_class, key):
-                raise ValueError(f"{self.model_class.__name__} has no attribute '{key}'")
-            stmt = stmt.where(getattr(self.model_class, key) == value)
+        clauses = self._filter_clauses(**filters)
+        if clauses:
+            stmt = stmt.where(*clauses)
         if extra_filters:
             stmt = stmt.where(*extra_filters)
         return stmt
@@ -607,9 +621,18 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
         self._commit(commit)
         return cast("CursorResult[object]", result).rowcount
 
-    def delete_where(self, *extra_filters: ColumnElement[bool], commit: bool | None = None) -> int:
+    def delete_where(
+        self,
+        *extra_filters: ColumnElement[bool],
+        commit: bool | None = None,
+        **filters: FilterValue,
+    ) -> int:
         """
         Bulk-DELETE every row matching the filters; return the number of rows deleted.
+
+        Filters combine the two forms the read methods use: equality `**filters`
+        keyed by attribute name (`delete_where(status="open")`) and arbitrary
+        `extra_filters` expressions (`delete_where(Task.created_at < cutoff)`).
 
         Set-based: no model is loaded and no `@on("delete", ...)` hook fires.
 
@@ -617,13 +640,13 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
             ValueError: if called with no filters (a guard against emptying the table).
 
         """
-        if not extra_filters:
+        if not extra_filters and not filters:
             raise ValueError(
                 "delete_where requires at least one filter (refusing a full-table delete)"
             )
         stmt = (
             delete(self.model_class)
-            .where(*extra_filters)
+            .where(*self._filter_clauses(**filters), *extra_filters)
             .execution_options(synchronize_session=False)
         )
         result = self._run(lambda: self.session.execute(stmt))

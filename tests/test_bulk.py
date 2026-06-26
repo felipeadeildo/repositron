@@ -74,6 +74,19 @@ def test_delete_where_returns_rowcount(session: Session, seed_users):
     assert session.get(User, seed_users[0].id) is not None  # Ada survives
 
 
+def test_delete_where_equality_kwargs(session: Session, seed_users):
+    repo = UserRepo(session)
+    n = repo.delete_where(is_active=False)  # status-style kwarg -> User.is_active == False
+    assert n == 1  # only Linus
+    assert session.scalars(select(User).where(User.is_active.is_(False))).all() == []
+
+
+def test_delete_where_kwargs_and_positional_combine(session: Session, seed_users):
+    repo = UserRepo(session)
+    n = repo.delete_where(User.age > 80, is_active=True)  # positional expr + equality kwarg
+    assert n == 1  # Grace (active, 85); Ada (active, 36) survives
+
+
 def test_delete_where_refuses_full_table(session: Session):
     with pytest.raises(ValueError, match="requires at least one filter"):
         UserRepo(session).delete_where()

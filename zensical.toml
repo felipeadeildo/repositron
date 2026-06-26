@@ -58,6 +58,7 @@ nav = [
     { "Configuration" = "guides/configuration.md" },
     { "Filtering" = "guides/filtering.md" },
     { "Updating rows" = "guides/updates.md" },
+    { "Bulk writes" = "guides/bulk.md" },
     { "Pagination" = "guides/pagination.md" },
     { "Projection" = "guides/projection.md" },
     { "Return types" = "guides/return-types.md" },

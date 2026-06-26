@@ -35,6 +35,13 @@ at a glance whether it is the one you need right now.
 
     Partial updates that can tell "skip this field" apart from "set it to NULL".
 
+-   :material-layers-triple:{ .lg .middle } __[Bulk writes](bulk.md)__
+
+    ---
+
+    Insert, update, or delete many rows in one statement, when per-row CRUD is the
+    wrong tool.
+
 -   :material-book-open-page-variant:{ .lg .middle } __[Pagination](pagination.md)__
 
     ---

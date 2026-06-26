@@ -4,8 +4,9 @@ icon: lucide/function-square
 
 # Custom queries
 
-The base class gives you CRUD. Real repositories grow past CRUD: a free-text
-search, a batch insert, a query that joins three tables to answer one question.
+The base class gives you CRUD and [bulk writes](bulk.md). Real repositories grow
+past both: a free-text search, an upsert, a query that joins three tables to
+answer one question.
 repositron's job is to remove the boilerplate, not to box you in, so everything
 on your repository is an ordinary class with `self.session` and `self.model_class`
 to build on.
@@ -92,27 +93,27 @@ A method that does not fit `get` / `list` is just a method. You have the session
 the model, and the full SQLAlchemy API:
 
 ```python
-from datetime import datetime
-
-from sqlalchemy import update
+from sqlalchemy import func, select
 
 
 class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
     def open_in_workspace(self, workspace_id: int) -> list[TaskDTO]:
         return self.list(status="open", workspace_id=workspace_id)
 
-    def archive_all_done(self, workspace_id: int) -> None:
-        self.session.execute(
-            update(Task)
-            .where(Task.workspace_id == workspace_id, Task.status == "done")
-            .values(archived_at=datetime.now())
-        )
-        self.session.flush()
+    def status_counts(self, workspace_id: int) -> dict[str, int]:
+        rows = self.session.execute(
+            select(Task.status, func.count())
+            .where(Task.workspace_id == workspace_id)
+            .group_by(Task.status)
+        ).all()
+        return dict(rows)
 ```
 
 Note the first method reuses `self.list` instead of reaching for the session.
 Build on the inherited methods where they fit; drop to raw SQLAlchemy only where
-they do not.
+they do not. A plain bulk update or delete is one of the cases that *does* fit,
+[`update_where` / `delete_where`](bulk.md#updating-and-deleting-in-place) cover it
+without a custom method.
 
 ## Filter builders { #filter-builders }
 
@@ -138,33 +139,6 @@ repo.list(extra_filters=[repo.search("deploy")], status="open")
 
 Callers express intent ("search for deploy") and the column logic lives in one
 place.
-
-## Batch inserts
-
-`create` inserts one row and reads its key back. For importing many rows at once,
-the per-row flush is the wrong tool. Add a batch method that uses
-`session.add_all` and flushes once:
-
-```python
-class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
-    def create_many(self, payloads: list[TaskCreate]) -> None:
-        if not payloads:
-            return
-        rows = [Task(workspace_id=p.workspace_id, title=p.title) for p in payloads]
-        self.session.add_all(rows)
-        self.session.flush()
-```
-
-The same shape works for a batch that needs the generated ids back, by reading
-them off the flushed models:
-
-```python
-    def create_many_returning(self, payloads: list[TaskCreate]) -> list[int]:
-        rows = [Task(workspace_id=p.workspace_id, title=p.title) for p in payloads]
-        self.session.add_all(rows)
-        self.session.flush()
-        return [r.id for r in rows]
-```
 
 ## Custom hydration { #custom-hydration }
 
@@ -221,19 +195,21 @@ for a one-liner.
 
 A custom write is responsible for the same `flush` / `commit` / rollback dance
 the built-in `create` / `update` / `delete` handle for you. `@writes` gives a
-custom method that dance, so its body is only the session work:
+custom method that dance, so its body is only the session work. Reach for it when
+the write is past what [bulk writes](bulk.md) cover, an upsert here:
 
 ```python hl_lines="7"
-from sqlalchemy import update
+from sqlalchemy.dialects.postgresql import insert
 
 from repositron import Repository, writes
 
 
 class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
     @writes
-    def bulk_set_status(self, task_ids: list[int], status: str) -> None:
+    def upsert_by_title(self, workspace_id: int, title: str, status: str) -> None:
+        stmt = insert(Task).values(workspace_id=workspace_id, title=title, status=status)
         self.session.execute(
-            update(Task).where(Task.id.in_(task_ids)).values(status=status)
+            stmt.on_conflict_do_update(index_elements=["title"], set_={"status": status})
         )   # flushed for you; rolled back on error
 ```
 
@@ -244,15 +220,16 @@ declare a `commit` parameter and `@writes` honors it:
 
 ```python
     @writes
-    def bulk_set_status(
-        self, task_ids: list[int], status: str, *, commit: bool | None = None
+    def upsert_by_title(
+        self, workspace_id: int, title: str, status: str, *, commit: bool | None = None
     ) -> None:
+        stmt = insert(Task).values(workspace_id=workspace_id, title=title, status=status)
         self.session.execute(
-            update(Task).where(Task.id.in_(task_ids)).values(status=status)
+            stmt.on_conflict_do_update(index_elements=["title"], set_={"status": status})
         )
 
 
-repo.bulk_set_status([1, 2, 3], "done", commit=True)   # this one write commits
+repo.upsert_by_title(1, "Ship docs", "open", commit=True)   # this one write commits
 ```
 
 When the method needs the primary key mid-way, to attach child rows or return it,
