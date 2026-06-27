@@ -12,7 +12,7 @@ from dataclasses import fields, is_dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, get_origin
 
-from sqlalchemy import CursorResult, Select, delete, func, select, update
+from sqlalchemy import CursorResult, Select, delete, func, inspect, select, update
 from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -611,6 +611,12 @@ class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT 
             raise ValueError(
                 "update_where requires at least one filter (refusing a full-table update)"
             )
+        mapper = inspect(self.model_class)
+        for key in values:
+            if key not in mapper.columns:
+                raise ValueError(
+                    f"update_where: '{key}' is not a column of {self.model_class.__name__}"
+                )
         stmt = (
             update(self.model_class)
             .where(*extra_filters)

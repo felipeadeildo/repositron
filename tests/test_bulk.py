@@ -67,6 +67,11 @@ def test_update_where_refuses_full_table(session: Session):
         UserRepo(session).update_where(is_active=False)
 
 
+def test_update_where_rejects_unknown_column(session: Session):
+    with pytest.raises(ValueError, match="'nope' is not a column of User"):
+        UserRepo(session).update_where(User.is_active.is_(True), nope="x")
+
+
 def test_delete_where_returns_rowcount(session: Session, seed_users):
     repo = UserRepo(session)
     n = repo.delete_where(User.is_active.is_(False))
