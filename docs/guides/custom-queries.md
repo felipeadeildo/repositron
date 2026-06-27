@@ -191,6 +191,16 @@ mechanism, the override is just the build hook spelled as a method. Use whicheve
 reads better: the override for a longer construction like the one above, the hook
 for a one-liner.
 
+!!! warning "Hydrating from your own method"
+    `get` / `first` / `list` run hydration through `_hydrate_one`, which applies
+    the build hook *and* the [`hydrate` after-hooks](hooks.md#enriching-the-dto).
+    When a custom method ([a `@writes`](#writes) that returns DTOs, say) needs to
+    hydrate a row itself, call **`self._hydrate_one(model)`**, not
+    `self._hydrate(model)`. `_hydrate` is the *default* build only; if your build
+    lives in a separate `@on("hydrate", mode="build")` method, calling `_hydrate`
+    directly skips it and silently runs the automatic conversion. `_hydrate_one`
+    always routes through whatever build and after-hooks are registered.
+
 ## Transactions on custom writes { #writes }
 
 A custom write is responsible for the same `flush` / `commit` / rollback dance
@@ -245,6 +255,21 @@ commit/rollback:
         for title in subtasks:
             self.session.add(Subtask(task_id=task.id, title=title))
         return task.id
+```
+
+To return DTOs from a custom write instead of an id, hydrate the saved rows with
+`self._hydrate_one`, the same entry point `get` and `list` use, so a custom build
+or `hydrate` after-hooks apply:
+
+```python
+    @writes
+    def create_with_subtasks(self, payload: TaskCreate, subtasks: list[str]) -> TaskDTO:
+        task = Task(workspace_id=payload.workspace_id, title=payload.title)
+        self.session.add(task)
+        self.session.flush()
+        for title in subtasks:
+            self.session.add(Subtask(task_id=task.id, title=title))
+        return self._hydrate_one(task)   # not self._hydrate, see Custom hydration above
 ```
 
 Without `@writes`, a custom write should still `flush`, never `commit`, the same
