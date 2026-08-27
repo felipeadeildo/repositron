@@ -7,7 +7,7 @@ from dataclasses import fields, is_dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, get_origin
 
-from sqlalchemy import CursorResult, Select, delete, func, inspect, select, update
+from sqlalchemy import CursorResult, Delete, Select, Update, delete, func, inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_scoped_session
 from sqlalchemy.orm import InstrumentedAttribute, Mapper, Session
 from sqlalchemy.sql.elements import ColumnElement
@@ -71,7 +71,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int, SessionT: RepositoryS
             raise TypeError(
                 f"{type(self).__name__} has an AsyncSession; use the awaited repository method"
             )
-        return cast("Session", self.session)
+        return self.session
 
     def _async_session(self) -> AsyncRepositorySession:
         if not isinstance(self.session, (AsyncSession, async_scoped_session)):
@@ -307,11 +307,8 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int, SessionT: RepositoryS
         return next(self._hooks_for("hydrate", "build"), self._hydrate)
 
     @cached_property
-    def _after_hooks(self) -> _list[Callable[[ModelT, DTOT], object]]:
-        return [
-            cast("Callable[[ModelT, DTOT], object]", hook)
-            for hook in self._hooks_for("hydrate", "after")
-        ]
+    def _after_hooks(self) -> _list[Callable[..., object]]:
+        return list(self._hooks_for("hydrate", "after"))
 
     def _hydrate_one_sync(self, model: ModelT) -> DTOT:
         """
@@ -350,33 +347,40 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int, SessionT: RepositoryS
         )
         return dto, stmt
 
-    def _materialize_sync(
-        self, dto: type | None, stmt: Select, *, first: bool
-    ) -> DTOT | _list[DTOT] | None:
+    def _rows_sync(self, dto: type | None, stmt: Select, *, first: bool) -> _list[DTOT]:
+        """Execute a read and build every DTO it yields, projected or hydrated."""
         session = self._sync_session()
         if dto is not None:
             result = session.execute(stmt)
             rows = [result.first()] if first else result.all()
-            values = [dto(*row) for row in rows if row is not None]
-        else:
-            result = session.scalars(stmt)
-            models = [result.first()] if first else result.all()
-            values = [self._hydrate_one_sync(model) for model in models if model is not None]
-        return values[0] if first and values else (None if first else values)
+            return [dto(*row) for row in rows if row is not None]
+        scalars = session.scalars(stmt)
+        models = [scalars.first()] if first else scalars.all()
+        return [self._hydrate_one_sync(model) for model in models if model is not None]
 
-    async def _materialize_async(
-        self, dto: type | None, stmt: Select, *, first: bool
-    ) -> DTOT | _list[DTOT] | None:
-        session = self._async_session()
-        result = await session.execute(stmt)
+    def _first_sync(self, dto: type | None, stmt: Select) -> DTOT | None:
+        values = self._rows_sync(dto, stmt, first=True)
+        return values[0] if values else None
+
+    def _all_sync(self, dto: type | None, stmt: Select) -> _list[DTOT]:
+        return self._rows_sync(dto, stmt, first=False)
+
+    async def _rows_async(self, dto: type | None, stmt: Select, *, first: bool) -> _list[DTOT]:
+        """Await a read and build every DTO it yields, projected or hydrated."""
+        result = await self._async_session().execute(stmt)
         if dto is not None:
             rows = [result.first()] if first else result.all()
-            values = [dto(*row) for row in rows if row is not None]
-        else:
-            scalars = result.scalars()
-            models = [scalars.first()] if first else scalars.all()
-            values = [await self._hydrate_one_async(model) for model in models if model is not None]
-        return values[0] if first and values else (None if first else values)
+            return [dto(*row) for row in rows if row is not None]
+        scalars = result.scalars()
+        models = [scalars.first()] if first else scalars.all()
+        return [await self._hydrate_one_async(model) for model in models if model is not None]
+
+    async def _first_async(self, dto: type | None, stmt: Select) -> DTOT | None:
+        values = await self._rows_async(dto, stmt, first=True)
+        return values[0] if values else None
+
+    async def _all_async(self, dto: type | None, stmt: Select) -> _list[DTOT]:
+        return await self._rows_async(dto, stmt, first=False)
 
     async def get[AsyncSessionT: AsyncRepositorySession](
         self: "ReadOnlyRepository[ModelT, DTOT, PKT, AsyncSessionT]", id: PKT
@@ -407,7 +411,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int, SessionT: RepositoryS
     ) -> DTOT | None:
         """Await the first record matching equality and expression filters."""
         dto, stmt = self._read_stmt(extra_filters=extra_filters, order_by=order_by, filters=filters)
-        return cast("DTOT | None", await self._materialize_async(dto, stmt, first=True))
+        return await self._first_async(dto, stmt)
 
     def first_sync(
         self: "ReadOnlyRepository[ModelT, DTOT, PKT, Session]",
@@ -418,7 +422,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int, SessionT: RepositoryS
     ) -> DTOT | None:
         """Return the first record matching equality and expression filters."""
         dto, stmt = self._read_stmt(extra_filters=extra_filters, order_by=order_by, filters=filters)
-        return cast("DTOT | None", self._materialize_sync(dto, stmt, first=True))
+        return self._first_sync(dto, stmt)
 
     async def list[AsyncSessionT: AsyncRepositorySession](
         self: "ReadOnlyRepository[ModelT, DTOT, PKT, AsyncSessionT]",
@@ -429,7 +433,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int, SessionT: RepositoryS
     ) -> _list[DTOT]:
         """Await all records matching equality and expression filters."""
         dto, stmt = self._read_stmt(extra_filters=extra_filters, order_by=order_by, filters=filters)
-        return cast("_list[DTOT]", await self._materialize_async(dto, stmt, first=False))
+        return await self._all_async(dto, stmt)
 
     def list_sync(
         self: "ReadOnlyRepository[ModelT, DTOT, PKT, Session]",
@@ -440,7 +444,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int, SessionT: RepositoryS
     ) -> _list[DTOT]:
         """Return all records matching equality and expression filters."""
         dto, stmt = self._read_stmt(extra_filters=extra_filters, order_by=order_by, filters=filters)
-        return cast("_list[DTOT]", self._materialize_sync(dto, stmt, first=False))
+        return self._all_sync(dto, stmt)
 
     def _paginated_stmt(
         self,
@@ -479,7 +483,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int, SessionT: RepositoryS
         )
         session = self._async_session()
         total = await session.scalar(count_stmt) or 0
-        items = cast("_list[DTOT]", await self._materialize_async(dto, stmt, first=False))
+        items = await self._all_async(dto, stmt)
         return PaginatedResult(items=items, total=total)
 
     def list_paginated_sync(
@@ -496,7 +500,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int, SessionT: RepositoryS
             offset, limit, extra_filters=extra_filters, order_by=order_by, filters=filters
         )
         total = self._sync_session().scalar(count_stmt) or 0
-        items = cast("_list[DTOT]", self._materialize_sync(dto, stmt, first=False))
+        items = self._all_sync(dto, stmt)
         return PaginatedResult(items=items, total=total)
 
     async def count[AsyncSessionT: AsyncRepositorySession](
@@ -729,7 +733,7 @@ class Repository[
 
     def _update_where_stmt(
         self, extra_filters: tuple[ColumnElement[bool], ...], values: dict[str, object]
-    ) -> Select:
+    ) -> Update:
         if not extra_filters:
             raise ValueError(
                 "update_where requires at least one filter (refusing a full-table update)"
@@ -740,12 +744,11 @@ class Repository[
                 raise ValueError(
                     f"update_where: '{key}' is not a column of {self.model_class.__name__}"
                 )
-        return cast(
-            "Select",
+        return (
             update(self.model_class)
             .where(*extra_filters)
             .values(**values)
-            .execution_options(synchronize_session=False),
+            .execution_options(synchronize_session=False)
         )
 
     async def update_where[AsyncSessionT: AsyncRepositorySession](
@@ -774,16 +777,15 @@ class Repository[
 
     def _delete_where_stmt(
         self, extra_filters: tuple[ColumnElement[bool], ...], filters: dict[str, FilterValue]
-    ) -> Select:
+    ) -> Delete:
         if not extra_filters and not filters:
             raise ValueError(
                 "delete_where requires at least one filter (refusing a full-table delete)"
             )
-        return cast(
-            "Select",
+        return (
             delete(self.model_class)
             .where(*self._filter_clauses(**filters), *extra_filters)
-            .execution_options(synchronize_session=False),
+            .execution_options(synchronize_session=False)
         )
 
     async def delete_where[AsyncSessionT: AsyncRepositorySession](
