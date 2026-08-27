@@ -17,7 +17,7 @@ repositories touch only the first two.
 
     from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-    from repositron import Repository
+    from repositron import Repository, UNSET, UnsetType
 
 
     class Base(DeclarativeBase):
@@ -54,9 +54,9 @@ repositories touch only the first two.
 
     @dataclass(frozen=True, slots=True)
     class TaskUpdate:
-        title: str | None = None
-        status: str | None = None
-        assignee_id: int | None = None
+        title: str | UnsetType = UNSET
+        status: str | UnsetType = UNSET
+        assignee_id: int | None | UnsetType = UNSET
 
 
     class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
@@ -105,8 +105,9 @@ You only reach for the knobs below when the DTO needs to **diverge** from the
 model:
 
 - a field is named differently from its column? add it to `field_mapping`
-- the DTO should carry fewer columns than the model? just leave them out, and the
-  extra columns are simply not read into it
+- the DTO should carry fewer fields than the model? leave them out and hydration
+  does not copy them into the DTO. To select fewer database columns, use
+  [`repo[Shape]`](projection.md)
 - the DTO needs a value the row alone cannot give (a join, a computed field)?
   add it with a [`hydrate` hook](hooks.md#enriching-the-dto)
 - the primary key is not called `id`? set `pk_column`
@@ -118,8 +119,8 @@ only on the tables that need it.
 ## Type parameters and their defaults
 
 ```python
-Repository[Model, DTO = Model, Create = object, Update = object, PK = int]
-ReadOnlyRepository[Model, DTO = Model, PK = int]
+Repository[Model, DTO = Model, Create = object, Update = object, PK = int, SessionT = Session]
+ReadOnlyRepository[Model, DTO = Model, PK = int, SessionT = Session]
 ```
 
 Only `Model` is required. Everything after it has a default, so you supply each
@@ -132,6 +133,7 @@ parameter only when you actually need it.
 | `Create`  | defaults to `object`: you simply do not call `create`         |
 | `Update`  | defaults to `object`: you simply do not call `update`         |
 | `PK`      | defaults to `int`: the type of the primary key, so `get`/`exists`/`delete` take it and `create` returns it |
+| `SessionT` | defaults to `Session`: use `AsyncSession` or `async_scoped_session[AsyncSession]` for the awaited API |
 
 That is why both of these are valid, each adding only what it uses:
 
@@ -165,8 +167,8 @@ class PageRepository(ReadOnlyRepository[Page, PageDTO, str]):
     pk_column = "url_hash"
 ```
 
-The key type lives in the last slot so the int-keyed majority never writes it.
-When the key is a `str` or `uuid`, declare it there, see
+The key type is the `PK` slot, immediately before `SessionT`. When the key is a
+`str` or `uuid`, declare it there, see
 [primary keys](primary-keys.md) for the why and the slot mechanics.
 
 The parameters are read off your class declaration at runtime, so you do not
@@ -202,22 +204,21 @@ class TaskDTO:
     opened_at: datetime             # the field
 ```
 
-### It applies in both directions
+### It applies to hydration and projection
 
-This is the part worth internalizing: one mapping covers every direction data
-flows through the repository.
+`field_mapping` translates between model columns and DTO fields on reads. It
+does not rename create or update payload fields.
 
 - **Reading (hydration).** When a row becomes a `TaskDTO`, the column `created_at`
   is read into the field `opened_at`.
-- **Projecting.** When you do `repo[TaskCard].list()` and `TaskCard` has an
+- **Projecting.** When you do `repo[TaskCard].list_sync()` and `TaskCard` has an
   `opened_at` field, repositron resolves it back to the `created_at` column to
   build the `SELECT`. See [projection](projection.md).
-- **Writing.** Create and update payloads are matched against model attributes by
-  name, so a payload field that matches a real column writes straight through.
+- **Writing.** Create and update payloads always use model attribute names. A
+  payload for `created_at` must name `created_at`, even if the DTO calls it
+  `opened_at`.
 
-You declare the rename in one place and never think about which direction you are
-going. A field not listed in `field_mapping` is assumed to have the same name on
-both sides, which is the usual case, so the map only ever holds the exceptions.
+A field not listed in `field_mapping` has the same name on the model and DTO.
 
 ## `pk_column`: when the key is not `id`
 
@@ -255,7 +256,7 @@ class PageRepository(ReadOnlyRepository[Page, PageDTO, str]):
 ```
 
 The column's *name* is a runtime concern (`pk_column`); the key's *type* is the
-last type parameter (`PK`). They are separate knobs. The details, including
+`PK` parameter before `SessionT`. They are separate knobs. The details, including
 `str`/`uuid` keys and composite keys, live in [primary keys](primary-keys.md).
 
 ## Defaults you can override at the class level
@@ -268,8 +269,8 @@ class TaskRepository(Repository[Task, TaskDTO]):
     field_mapping = {"created_at": "opened_at"}
     ORDER = [Task.created_at.desc(), Task.id]
 
-repo.list(order_by=repo.ORDER)
-repo.list_paginated(0, 20, order_by=repo.ORDER)
+repo.list_sync(order_by=repo.ORDER)
+repo.list_paginated_sync(0, 20, order_by=repo.ORDER)
 ```
 
 `ORDER` is not special to repositron, it is just an attribute you define and pass

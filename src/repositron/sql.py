@@ -1,27 +1,23 @@
-"""
-Concrete SQLAlchemy repositories: `ReadOnlyRepository` and `Repository`.
-
-The working classes a project inherits from. They implement the contracts in
-`repositron.base` over a SQLAlchemy `Session`, adding model-to-DTO hydration,
-column projection via `repo[DTO]`, and the equality/expression filter split.
-"""
+"""Unified synchronous and asynchronous SQLAlchemy repositories."""
 
 import copy
-from collections.abc import Callable, Iterator
+import inspect as pyinspect
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import fields, is_dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, get_origin
 
 from sqlalchemy import CursorResult, Select, delete, func, inspect, select, update
-from sqlalchemy.orm import InstrumentedAttribute, Session
+from sqlalchemy.ext.asyncio import AsyncSession, async_scoped_session
+from sqlalchemy.orm import InstrumentedAttribute, Mapper, Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from repositron.base import (
-    CRUDRepositoryABC,
+    AsyncRepositorySession,
     FilterValue,
     OrderBy,
     PaginatedResult,
-    ReadOnlyRepositoryABC,
+    RepositorySession,
 )
 from repositron.hooks import HookEvent, HookMode, HookRegistry, collect_hooks, on
 from repositron.sentinel import UnsetType
@@ -29,124 +25,143 @@ from repositron.sentinel import UnsetType
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
 
-_list = list  # avoids shadowing by the list() method in class scope
+_list = list
 
 
-class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
-    ReadOnlyRepositoryABC[ModelT, DTOT, PKT]
+class _HookedRepository:
+    """Validate hook declarations as repository subclasses are created."""
+
+    _hooks: ClassVar[HookRegistry] = {}
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        cls._hooks = collect_hooks(cls)
+
+
+class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int, SessionT: RepositorySession = Session](
+    _HookedRepository
 ):
     """
-    Typed read access to one table, parameterized by model and DTO.
+    Read one model through either a :class:`Session` or :class:`AsyncSession`.
 
-    Reads return the DTO `DTOT` (defaults to `ModelT`, i.e. the model itself with
-    no hydration). The instance holds no per-call state, so a single repository is
-    safe to share and inject.
-
-    Two filtering mechanisms combine in one call:
-
-    - `**filters`: equality only (`column == value`), keyed by model attribute
-      name, e.g. `name="Ale"`. `UNSET` skips that filter; `None` filters by
-      `IS NULL`.
-    - `extra_filters`: arbitrary SQLAlchemy expressions for what equality can't
-      express, like `age > 18`, `IN`, `LIKE`, `OR`. So
-      `list(name="Ale", extra_filters=[Model.age > 18])` is
-      `WHERE name = 'Ale' AND age > 18`.
-
-    The return type is resolved `repo[X]` (call site) > `DTOT` (class default) >
-    `ModelT` (fallback); see `__getitem__`.
+    The regular methods are the asynchronous API and require ``AsyncSession``.
+    Their ``*_sync`` counterparts require ``Session``. Statement construction,
+    DTO hydration, projection, filtering, and ordering stay identical in both
+    modes.
     """
 
     field_mapping: ClassVar[dict[str, str]] = {}
-    """Renamed fields as `{model_field: dto_field}`, applied both when hydrating and when resolving projection columns."""  # noqa: E501
-
     pk_column: ClassVar[str | InstrumentedAttribute] = "id"
-    """Primary-key column, as an attribute name (`"url_hash"`) or a column reference (`User.id`)."""
 
     def __init__(
         self,
-        session: Session,
+        session: SessionT,
         *,
         autocommit: bool = False,
         rollback_on_error: bool = True,
     ) -> None:
-        """
-        Args:
-            session: Caller-owned session. The repository never opens or closes it.
-            autocommit: When True, every write commits after its flush. Default False keeps the
-                transaction boundary in the caller's hands.
-            rollback_on_error: When True (default), a failed flush or commit rolls the session
-                back before re-raising. Set False to leave the rollback to you.
-
-        """
+        """Store a caller-owned synchronous or asynchronous SQLAlchemy session."""
         self.session = session
         self.autocommit = autocommit
         self.rollback_on_error = rollback_on_error
         self._active_dto: type | None = None
-        """DTO bound via `__getitem__` (call-site override); None uses the class default."""
 
-    _hooks: ClassVar[HookRegistry] = {}
-    """Hooks declared with `@on`, collected per subclass; see `__init_subclass__`."""
+    def _sync_session(self) -> Session:
+        if isinstance(self.session, (AsyncSession, async_scoped_session)):
+            raise TypeError(
+                f"{type(self).__name__} has an AsyncSession; use the awaited repository method"
+            )
+        return cast("Session", self.session)
 
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        # Collect @on-tagged methods once, at class definition, across the MRO.
-        super().__init_subclass__(**kwargs)
-        cls._hooks = collect_hooks(cls)
+    def _async_session(self) -> AsyncRepositorySession:
+        if not isinstance(self.session, (AsyncSession, async_scoped_session)):
+            raise TypeError(
+                f"{type(self).__name__} has {type(self.session).__name__}; "
+                "use the matching *_sync repository method"
+            )
+        return self.session
 
-    def _hooks_for(self, event: HookEvent, mode: HookMode) -> Iterator[Callable]:
-        """Yield the bound hook methods for `event`/`mode`, in registration order."""
+    @staticmethod
+    def _sync_value(value: object, source: str) -> object:
+        if not pyinspect.isawaitable(value):
+            return value
+        close = getattr(value, "close", None)
+        if close is not None:
+            close()
+        raise TypeError(f"{source} returned an awaitable; use the awaited repository method")
+
+    @staticmethod
+    async def _async_value(value: object) -> object:
+        return await value if pyinspect.isawaitable(value) else value
+
+    def _hooks_for(self, event: HookEvent, mode: HookMode) -> Iterator[Callable[..., object]]:
         for name in self._hooks.get((event, mode), ()):
-            yield getattr(self, name)
+            yield cast("Callable[..., object]", getattr(self, name))
 
-    def _emit(self, event: HookEvent, mode: HookMode, *args: object) -> None:
-        """Run each hook for `event`/`mode` as a side effect, ignoring returns."""
+    @staticmethod
+    def _hook_name(hook: Callable[..., object]) -> str:
+        return cast("str", getattr(hook, "__qualname__", type(hook).__name__))
+
+    def _emit_sync(self, event: HookEvent, mode: HookMode, *args: object) -> None:
         for hook in self._hooks_for(event, mode):
-            hook(*args)
+            self._sync_value(hook(*args), f"hook {self._hook_name(hook)}")
 
-    def _flush(self) -> None:
-        self._run(self.session.flush)
+    async def _emit_async(self, event: HookEvent, mode: HookMode, *args: object) -> None:
+        for hook in self._hooks_for(event, mode):
+            await self._async_value(hook(*args))
 
-    def _commit(self, commit: bool | None) -> None:
-        """Commit if `commit` is True, or None and `autocommit` is on."""
-        if commit if commit is not None else self.autocommit:
-            self._run(self.session.commit)
-
-    def _run[R](self, op: Callable[[], R]) -> R:
-        """Run `op`, rolling back on error when `rollback_on_error` is set, and return its result."""  # noqa: E501
+    def _run_sync[R](self, op: Callable[[], R]) -> R:
+        """Run synchronous database work and roll back on errors when configured."""
+        session = self._sync_session()
         try:
             return op()
         except Exception:
             if self.rollback_on_error:
-                self.session.rollback()
+                session.rollback()
             raise
+
+    async def _run_async[R](self, op: Callable[[], Awaitable[R]]) -> R:
+        """Run asynchronous database work and roll back on errors when configured."""
+        session = self._async_session()
+        try:
+            return await op()
+        except Exception:
+            if self.rollback_on_error:
+                await session.rollback()
+            raise
+
+    def _flush_sync(self) -> None:
+        self._run_sync(self._sync_session().flush)
+
+    async def _flush_async(self) -> None:
+        session = self._async_session()
+        await self._run_async(session.flush)
+
+    def _commit_sync(self, commit: bool | None) -> None:
+        if commit if commit is not None else self.autocommit:
+            self._run_sync(self._sync_session().commit)
+
+    async def _commit_async(self, commit: bool | None) -> None:
+        if commit if commit is not None else self.autocommit:
+            session = self._async_session()
+            await self._run_async(session.commit)
 
     @classmethod
     def _extract_type_arg(cls, index: int) -> type | None:
-        """
-        Extract a generic type argument from `__orig_bases__`, or None if absent.
-
-        Scans for the base parameterized off `ReadOnlyRepository` and
-        returns its argument at `index`. Robust to multiple inheritance (mixins
-        are skipped) and to base position in the MRO. Returns None when the
-        argument was omitted (e.g. DTOT left to its default) so callers can fall
-        back rather than crash.
-        """
         for base in getattr(cls, "__orig_bases__", ()):
             origin = get_origin(base) or base
             if isinstance(origin, type) and issubclass(origin, ReadOnlyRepository):
                 args = get_args(base)
                 if len(args) > index:
                     arg = args[index]
-                    # A still-unbound TypeVar (default not supplied) is not a real type.
                     return arg if isinstance(arg, type) else None
                 return None
         raise TypeError(
-            f"Cannot infer type arguments for {cls.__name__}. Inherit passing the generic "
-            f"parameters, e.g. class MyRepo(Repository[Model, DTO, Create, Update])."
+            f"Cannot infer type arguments for {cls.__name__}. Inherit from Repository[Model, ...]."
         )
 
     @cached_property
     def model_class(self) -> type[ModelT]:
-        """SQLAlchemy model class, inferred from the `ModelT` generic parameter."""
         model = self._extract_type_arg(0)
         if model is None:
             raise TypeError(f"{type(self).__name__} must be parameterized with a model class.")
@@ -154,39 +169,22 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
 
     @cached_property
     def dto_class(self) -> type[DTOT]:
-        """DTO class: the `DTOT` generic if supplied, else `ModelT` (model-as-DTO)."""
         dto = self._extract_type_arg(1)
         return cast("type[DTOT]", dto if dto is not None else self.model_class)
 
     @property
     def _dto(self) -> type:
-        """Active DTO: the call-site override (`repo[X]`) if set, else the class default."""
         return self._active_dto if self._active_dto is not None else self.dto_class
 
-    def __getitem__[S](self, dto: type[S]) -> "ReadOnlyRepository[ModelT, S, PKT]":
-        """
-        Return a lightweight clone bound to `dto` for this call.
-
-        The clone shares this repository's session and diverges only in its active
-        DTO, so the injected instance stays untouched and thread-safe. A narrow
-        dataclass DTO triggers column projection (loads only its fields).
-
-        Example:
-            repo[TargetIdOrg].list(is_active=True)  # SELECT id, organization_id
-
-        """
+    def __getitem__[S](self, dto: type[S]) -> "ReadOnlyRepository[ModelT, S, PKT, SessionT]":
+        """Bind a projection DTO for one call without changing this repository."""
         clone = copy.copy(self)
         clone._active_dto = dto
-        return cast("ReadOnlyRepository[ModelT, S, PKT]", clone)
+        return cast("ReadOnlyRepository[ModelT, S, PKT, SessionT]", clone)
 
     @cached_property
     def _pk_col(self) -> InstrumentedAttribute:
-        """The primary-key column, resolved from `pk_column` (a name or a column reference)."""
-        # Read pk_column off the class: a column reference is a descriptor, and instance
-        # access (self.pk_column) would fire it against this unmapped repo and raise.
         pk = type(self).pk_column
-        # Resolve by name through the model either way, so a column reference is validated
-        # to belong to this model (a foreign column would otherwise build a cartesian query).
         name = pk if isinstance(pk, str) else pk.key
         col = getattr(self.model_class, name, None)
         if col is None:
@@ -194,9 +192,8 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         return col
 
     def _project_columns(self, dto: type) -> _list[ColumnElement]:
-        """Resolve a dataclass DTO's fields to model columns (in field order), honoring field_mapping."""  # noqa: E501
         reverse = {v: k for k, v in self.field_mapping.items()}
-        names = [f.name for f in fields(cast("type[DataclassInstance]", dto))]
+        names = [field.name for field in fields(cast("type[DataclassInstance]", dto))]
         if not names:
             raise ValueError(f"DTO {dto.__name__} has no fields")
         columns: _list[ColumnElement] = []
@@ -211,85 +208,7 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
             columns.append(col)
         return columns
 
-    def _project(
-        self,
-        dto: type,
-        *,
-        extra_filters: _list[ColumnElement[bool]] | None,
-        order_by: OrderBy,
-        **filters: FilterValue,
-    ) -> Select:
-        """Build the column-projection statement for a dataclass `dto` (rows in field order)."""
-        return self._select(
-            *self._project_columns(dto),
-            extra_filters=extra_filters,
-            order_by=order_by,
-            **filters,
-        )
-
-    @on("hydrate", mode="build")
-    def _hydrate(self, model: ModelT) -> DTOT:
-        """
-        Build the DTO from a model. The default works for a Pydantic or dataclass
-        DTO (and the model itself), honoring `field_mapping` for renames.
-
-        Customize it when your DTO is none of those, e.g. a bare `str`. Either
-        override this method, or tag your own with `@on("hydrate", mode="build")`:
-
-            def _hydrate(self, model) -> str:
-                return str(model.image)
-        """
-        dto = self._dto
-        if dto is self.model_class:
-            return cast("DTOT", model)
-
-        try:
-            # ponytail: duck-type on model_validate instead of importing pydantic, so it
-            # stays a genuinely optional extra. from_attributes reads off the model; aliases rename.
-            validate = getattr(dto, "model_validate", None)
-            if validate is not None:
-                return cast("DTOT", validate(model))
-
-            model_dict = {k: v for k, v in model.__dict__.items() if not k.startswith("_")}
-            if is_dataclass(dto):
-                reverse = {v: k for k, v in self.field_mapping.items()}
-                kwargs = {
-                    f.name: model_dict[reverse.get(f.name, f.name)]
-                    for f in fields(dto)
-                    if reverse.get(f.name, f.name) in model_dict
-                }
-                return cast("DTOT", dto(**kwargs))
-            return cast("DTOT", dto(**model_dict))
-        except (AttributeError, TypeError, IndexError) as e:
-            raise NotImplementedError(
-                f"Cannot automatically convert {type(model).__name__} to {dto.__name__}. "
-                f"Override _hydrate() in your repository subclass. Error: {e}"
-            ) from e
-
-    @cached_property
-    def _build_hook(self) -> Callable[[ModelT], DTOT]:
-        # The build hook, or _hydrate directly when the base is used unsubclassed.
-        return next(self._hooks_for("hydrate", "build"), self._hydrate)
-
-    @cached_property
-    def _after_hooks(self) -> _list[Callable[[ModelT, DTOT], DTOT]]:
-        return list(self._hooks_for("hydrate", "after"))
-
-    def _hydrate_one(self, model: ModelT) -> DTOT:
-        # Build the DTO, then let each after-hook enrich it. Projection bypasses this.
-        dto = self._build_hook(model)
-        for hook in self._after_hooks:
-            dto = cast("DTOT", hook(model, dto))
-        return dto
-
     def _filter_clauses(self, **filters: FilterValue) -> _list[ColumnElement[bool]]:
-        """
-        Translate equality `**filters` into WHERE clauses, skipping UNSET values.
-
-        Raises:
-            ValueError: if a `**filters` key is not a model attribute.
-
-        """
         clauses: _list[ColumnElement[bool]] = []
         for key, value in filters.items():
             if isinstance(value, UnsetType):
@@ -306,13 +225,6 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         extra_filters: _list[ColumnElement[bool]] | None = None,
         **filters: FilterValue,
     ) -> Select:
-        """
-        Apply equality `**filters` and arbitrary `extra_filters` (see class docstring).
-
-        Raises:
-            ValueError: if a `**filters` key is not a model attribute.
-
-        """
         clauses = self._filter_clauses(**filters)
         if clauses:
             stmt = stmt.where(*clauses)
@@ -321,12 +233,9 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         return stmt
 
     def _apply_order(self, stmt: Select, order_by: OrderBy = None) -> Select:
-        """Apply `order_by` to a statement; `None` leaves it unordered."""
         if order_by is None:
             return stmt
-        if isinstance(order_by, list):
-            return stmt.order_by(*order_by)
-        return stmt.order_by(order_by)
+        return stmt.order_by(*order_by) if isinstance(order_by, list) else stmt.order_by(order_by)
 
     def _select(
         self,
@@ -335,66 +244,223 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         order_by: OrderBy = None,
         **filters: FilterValue,
     ) -> Select:
-        """Build a SELECT (over `columns`, or the whole model if none) with filters and order applied."""  # noqa: E501
         stmt = select(*columns) if columns else select(self.model_class)
-        stmt = self._apply_filters(stmt, extra_filters=extra_filters, **filters)
-        return self._apply_order(stmt, order_by=order_by)
+        return self._apply_order(
+            self._apply_filters(stmt, extra_filters=extra_filters, **filters), order_by=order_by
+        )
+
+    def _project(
+        self,
+        dto: type,
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None,
+        order_by: OrderBy,
+        **filters: FilterValue,
+    ) -> Select:
+        return self._select(
+            *self._project_columns(dto),
+            extra_filters=extra_filters,
+            order_by=order_by,
+            **filters,
+        )
 
     def _projecting(self) -> type | None:
-        """
-        The shape to column-project, or None to hydrate the full DTO instead.
-
-        Projection narrows the SELECT to a shape's fields, so it only applies to a
-        shape bound for the call via `repo[Shape]`. The default DTO always hydrates,
-        which lets it carry fields no column backs (those `_hydrate` derives).
-        """
         shape = self._active_dto
         if shape is None or shape is self.model_class:
             return None
         return shape if is_dataclass(shape) else None
 
-    def get(self, id: PKT) -> DTOT | None:
-        """Fetch one record by primary key, as the active DTO, or None if absent."""
-        return self.first(extra_filters=[self._pk_col == id])
+    @on("hydrate", mode="build")
+    def _hydrate(self, model: ModelT) -> DTOT:
+        """Build the configured DTO from a loaded model."""
+        dto = self._dto
+        if dto is self.model_class:
+            return cast("DTOT", model)
+        try:
+            validate = getattr(dto, "model_validate", None)
+            if validate is not None:
+                return cast("DTOT", validate(model))
+            model_dict = {
+                key: value for key, value in model.__dict__.items() if not key.startswith("_")
+            }
+            if is_dataclass(dto):
+                reverse = {v: k for k, v in self.field_mapping.items()}
+                return cast(
+                    "DTOT",
+                    dto(
+                        **{
+                            field.name: model_dict[reverse.get(field.name, field.name)]
+                            for field in fields(dto)
+                            if reverse.get(field.name, field.name) in model_dict
+                        }
+                    ),
+                )
+            return cast("DTOT", dto(**model_dict))
+        except (AttributeError, TypeError, IndexError) as error:
+            raise NotImplementedError(
+                f"Cannot automatically convert {type(model).__name__} to {dto.__name__}. "
+                f"Override _hydrate() in your repository subclass. Error: {error}"
+            ) from error
 
-    def first(
+    @cached_property
+    def _build_hook(self) -> Callable[[ModelT], object]:
+        return next(self._hooks_for("hydrate", "build"), self._hydrate)
+
+    @cached_property
+    def _after_hooks(self) -> _list[Callable[[ModelT, DTOT], object]]:
+        return [
+            cast("Callable[[ModelT, DTOT], object]", hook)
+            for hook in self._hooks_for("hydrate", "after")
+        ]
+
+    def _hydrate_one_sync(self, model: ModelT) -> DTOT:
+        """
+        Build one DTO for a custom synchronous repository method.
+
+        Uses the selected hydrate build hook and every hydrate after-hook.
+        """
+        dto = cast("DTOT", self._sync_value(self._build_hook(model), "hydrate build hook"))
+        for hook in self._after_hooks:
+            dto = cast("DTOT", self._sync_value(hook(model, dto), f"hook {self._hook_name(hook)}"))
+        return dto
+
+    async def _hydrate_one_async(self, model: ModelT) -> DTOT:
+        """
+        Build one DTO for a custom asynchronous repository method.
+
+        Uses the selected hydrate build hook and awaits every hydrate after-hook.
+        """
+        dto = cast("DTOT", await self._async_value(self._build_hook(model)))
+        for hook in self._after_hooks:
+            dto = cast("DTOT", await self._async_value(hook(model, dto)))
+        return dto
+
+    def _read_stmt(
         self,
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None,
+        order_by: OrderBy,
+        filters: dict[str, FilterValue],
+    ) -> tuple[type | None, Select]:
+        dto = self._projecting()
+        stmt = (
+            self._project(dto, extra_filters=extra_filters, order_by=order_by, **filters)
+            if dto is not None
+            else self._select(extra_filters=extra_filters, order_by=order_by, **filters)
+        )
+        return dto, stmt
+
+    def _materialize_sync(
+        self, dto: type | None, stmt: Select, *, first: bool
+    ) -> DTOT | _list[DTOT] | None:
+        session = self._sync_session()
+        if dto is not None:
+            result = session.execute(stmt)
+            rows = [result.first()] if first else result.all()
+            values = [dto(*row) for row in rows if row is not None]
+        else:
+            result = session.scalars(stmt)
+            models = [result.first()] if first else result.all()
+            values = [self._hydrate_one_sync(model) for model in models if model is not None]
+        return values[0] if first and values else (None if first else values)
+
+    async def _materialize_async(
+        self, dto: type | None, stmt: Select, *, first: bool
+    ) -> DTOT | _list[DTOT] | None:
+        session = self._async_session()
+        result = await session.execute(stmt)
+        if dto is not None:
+            rows = [result.first()] if first else result.all()
+            values = [dto(*row) for row in rows if row is not None]
+        else:
+            scalars = result.scalars()
+            models = [scalars.first()] if first else scalars.all()
+            values = [await self._hydrate_one_async(model) for model in models if model is not None]
+        return values[0] if first and values else (None if first else values)
+
+    async def get[AsyncSessionT: AsyncRepositorySession](
+        self: "ReadOnlyRepository[ModelT, DTOT, PKT, AsyncSessionT]", id: PKT
+    ) -> DTOT | None:
+        """
+        Fetch one record by primary key through ``AsyncSession``.
+
+        Returns ``None`` when no matching row exists. Await this method only on
+        a repository created with ``AsyncSession``.
+        """
+        return await self.first(extra_filters=[self._pk_col == id])
+
+    def get_sync(self: "ReadOnlyRepository[ModelT, DTOT, PKT, Session]", id: PKT) -> DTOT | None:
+        """
+        Fetch one record by primary key through ``Session``.
+
+        Returns ``None`` when no matching row exists. This is the synchronous
+        counterpart to :meth:`get`.
+        """
+        return self.first_sync(extra_filters=[self._pk_col == id])
+
+    async def first[AsyncSessionT: AsyncRepositorySession](
+        self: "ReadOnlyRepository[ModelT, DTOT, PKT, AsyncSessionT]",
         *,
         extra_filters: _list[ColumnElement[bool]] | None = None,
         order_by: OrderBy = None,
         **filters: FilterValue,
     ) -> DTOT | None:
-        """Fetch the first matching record, hydrated to the active DTO, or None."""
-        dto = self._projecting()
-        if dto is not None:
-            stmt = self._project(dto, extra_filters=extra_filters, order_by=order_by, **filters)
-            row = self.session.execute(stmt).first()
-            return cast("DTOT", dto(*row)) if row is not None else None
-        stmt = self._select(extra_filters=extra_filters, order_by=order_by, **filters)
-        model = self.session.scalars(stmt).first()
-        if model is None:
-            return None
-        return self._hydrate_one(model)
+        """Await the first record matching equality and expression filters."""
+        dto, stmt = self._read_stmt(extra_filters=extra_filters, order_by=order_by, filters=filters)
+        return cast("DTOT | None", await self._materialize_async(dto, stmt, first=True))
 
-    def list(
-        self,
+    def first_sync(
+        self: "ReadOnlyRepository[ModelT, DTOT, PKT, Session]",
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None = None,
+        order_by: OrderBy = None,
+        **filters: FilterValue,
+    ) -> DTOT | None:
+        """Return the first record matching equality and expression filters."""
+        dto, stmt = self._read_stmt(extra_filters=extra_filters, order_by=order_by, filters=filters)
+        return cast("DTOT | None", self._materialize_sync(dto, stmt, first=True))
+
+    async def list[AsyncSessionT: AsyncRepositorySession](
+        self: "ReadOnlyRepository[ModelT, DTOT, PKT, AsyncSessionT]",
         *,
         extra_filters: _list[ColumnElement[bool]] | None = None,
         order_by: OrderBy = None,
         **filters: FilterValue,
     ) -> _list[DTOT]:
-        """List records matching the filters, each hydrated to the active DTO."""
-        dto = self._projecting()
-        if dto is not None:
-            stmt = self._project(dto, extra_filters=extra_filters, order_by=order_by, **filters)
-            rows = self.session.execute(stmt).all()
-            # Rows come back in the DTO's field order (see _project_columns); build positionally.
-            return cast("_list[DTOT]", [dto(*row) for row in rows])
-        stmt = self._select(extra_filters=extra_filters, order_by=order_by, **filters)
-        return [self._hydrate_one(m) for m in self.session.scalars(stmt).all()]
+        """Await all records matching equality and expression filters."""
+        dto, stmt = self._read_stmt(extra_filters=extra_filters, order_by=order_by, filters=filters)
+        return cast("_list[DTOT]", await self._materialize_async(dto, stmt, first=False))
 
-    def list_paginated(
+    def list_sync(
+        self: "ReadOnlyRepository[ModelT, DTOT, PKT, Session]",
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None = None,
+        order_by: OrderBy = None,
+        **filters: FilterValue,
+    ) -> _list[DTOT]:
+        """Return all records matching equality and expression filters."""
+        dto, stmt = self._read_stmt(extra_filters=extra_filters, order_by=order_by, filters=filters)
+        return cast("_list[DTOT]", self._materialize_sync(dto, stmt, first=False))
+
+    def _paginated_stmt(
         self,
+        offset: int,
+        limit: int,
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None,
+        order_by: OrderBy,
+        filters: dict[str, FilterValue],
+    ) -> tuple[type | None, Select, Select]:
+        if order_by is None:
+            raise ValueError(
+                "list_paginated requires order_by: pagination is unstable without a stable order"
+            )
+        dto, stmt = self._read_stmt(extra_filters=extra_filters, order_by=order_by, filters=filters)
+        count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
+        return dto, stmt.offset(offset).limit(limit), count_stmt
+
+    async def list_paginated[AsyncSessionT: AsyncRepositorySession](
+        self: "ReadOnlyRepository[ModelT, DTOT, PKT, AsyncSessionT]",
         offset: int,
         limit: int = 20,
         *,
@@ -403,258 +469,343 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int](
         **filters: FilterValue,
     ) -> PaginatedResult[DTOT]:
         """
-        Return a page of records plus the unpaginated total.
+        Await one ordered page and its total matching-row count.
 
-        Args:
-            order_by: Required. Pagination over an unstable order silently drops
-                and repeats rows across pages, so a None order is rejected.
-
-        Raises:
-            ValueError: If `order_by` is None.
-
+        ``order_by`` is required because offset pagination has no stable meaning
+        without an explicit order.
         """
-        if order_by is None:
-            raise ValueError(
-                "list_paginated requires order_by: pagination is unstable without a stable order"
-            )
-        dto = self._projecting()
-        if dto is not None:
-            stmt = self._project(dto, extra_filters=extra_filters, order_by=order_by, **filters)
-            total = self._count_stmt(stmt)
-            rows = self.session.execute(stmt.offset(offset).limit(limit)).all()
-            items = cast("_list[DTOT]", [dto(*row) for row in rows])
-            return PaginatedResult(items=items, total=total)
-        stmt = self._select(extra_filters=extra_filters, order_by=order_by, **filters)
-        total = self._count_stmt(stmt)
-        models = self.session.scalars(stmt.offset(offset).limit(limit)).all()
-        return PaginatedResult(items=[self._hydrate_one(m) for m in models], total=total)
+        dto, stmt, count_stmt = self._paginated_stmt(
+            offset, limit, extra_filters=extra_filters, order_by=order_by, filters=filters
+        )
+        session = self._async_session()
+        total = await session.scalar(count_stmt) or 0
+        items = cast("_list[DTOT]", await self._materialize_async(dto, stmt, first=False))
+        return PaginatedResult(items=items, total=total)
 
-    def _count_stmt(self, stmt: Select) -> int:
-        """Total rows the statement would return, ignoring its order/offset/limit."""
-        # Wrap the filtered statement as a subquery so the count is correct through
-        # joins, DISTINCT, or column projection; drop ORDER BY since it can't appear
-        # under COUNT without being selected.
-        subq = stmt.order_by(None).subquery()
-        return self.session.scalar(select(func.count()).select_from(subq)) or 0
+    def list_paginated_sync(
+        self: "ReadOnlyRepository[ModelT, DTOT, PKT, Session]",
+        offset: int,
+        limit: int = 20,
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None = None,
+        order_by: OrderBy = None,
+        **filters: FilterValue,
+    ) -> PaginatedResult[DTOT]:
+        """Return one ordered page and its total matching-row count."""
+        dto, stmt, count_stmt = self._paginated_stmt(
+            offset, limit, extra_filters=extra_filters, order_by=order_by, filters=filters
+        )
+        total = self._sync_session().scalar(count_stmt) or 0
+        items = cast("_list[DTOT]", self._materialize_sync(dto, stmt, first=False))
+        return PaginatedResult(items=items, total=total)
 
-    def count(
-        self,
+    async def count[AsyncSessionT: AsyncRepositorySession](
+        self: "ReadOnlyRepository[ModelT, DTOT, PKT, AsyncSessionT]",
         *,
         extra_filters: _list[ColumnElement[bool]] | None = None,
         **filters: FilterValue,
     ) -> int:
-        """Count records matching the filters."""
+        """Await the count of rows matching the supplied filters."""
         stmt = self._apply_filters(select(self._pk_col), extra_filters=extra_filters, **filters)
-        return self._count_stmt(stmt)
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        return await self._async_session().scalar(count_stmt) or 0
 
-    def exists(self, id: PKT) -> bool:
-        """Check whether a record with this primary key exists."""
+    def count_sync(
+        self: "ReadOnlyRepository[ModelT, DTOT, PKT, Session]",
+        *,
+        extra_filters: _list[ColumnElement[bool]] | None = None,
+        **filters: FilterValue,
+    ) -> int:
+        """Return the count of rows matching the supplied filters."""
+        stmt = self._apply_filters(select(self._pk_col), extra_filters=extra_filters, **filters)
+        return self._sync_session().scalar(select(func.count()).select_from(stmt.subquery())) or 0
+
+    async def exists[AsyncSessionT: AsyncRepositorySession](
+        self: "ReadOnlyRepository[ModelT, DTOT, PKT, AsyncSessionT]", id: PKT
+    ) -> bool:
+        """Await whether a primary-key row exists."""
         stmt = select(self._pk_col).where(self._pk_col == id).limit(1)
-        return self.session.scalar(stmt) is not None
+        return await self._async_session().scalar(stmt) is not None
+
+    def exists_sync(self: "ReadOnlyRepository[ModelT, DTOT, PKT, Session]", id: PKT) -> bool:
+        """Return whether a primary-key row exists."""
+        stmt = select(self._pk_col).where(self._pk_col == id).limit(1)
+        return self._sync_session().scalar(stmt) is not None
 
 
-class Repository[ModelT, DTOT = ModelT, CreateT = object, UpdateT = object, PKT = int](
-    ReadOnlyRepository[ModelT, DTOT, PKT], CRUDRepositoryABC[ModelT, DTOT, CreateT, UpdateT, PKT]
-):
-    """
-    Read access plus `create`/`update`/`delete` from dataclass payloads.
-
-    Writes `flush` so the caller still owns the transaction boundary. Set
-    `autocommit=True` on the instance, or pass `commit=True` on a single write,
-    to commit too. `CreateT`/`UpdateT` are the payload dataclasses; `UNSET`
-    fields are skipped on write.
-
-        class UserRepository(Repository[User, UserDTO, UserCreate, UserUpdate]):
-            field_mapping = {"full_name": "name"}
-
-    Methods tagged with `@on` run inside the matching operation. Each event
-    passes a fixed set of arguments; `hydrate` hooks return the DTO, the rest
-    return nothing:
-
-        ("create", "before")    (model, payload)   before the insert flushes
-        ("create", "after")     (model)            after flush, key assigned
-        ("update", "before")    (model, payload)   after the payload is applied
-        ("update", "after")     (model)            after flush
-        ("delete", "before")    (model)            before the row is deleted
-        ("delete", "after")     (model)            after flush
-        ("hydrate", "build")    (model)            builds the DTO (replaces the default)
-        ("hydrate", "after")    (model, dto)       enriches the built DTO, on every read
-
-    For a custom write method that isn't a plain create/update/delete, wrap it
-    with `@writes` to get the same flush/commit/rollback.
-    """
-
-    def _get_model(self, id: PKT) -> ModelT | None:
-        """Load the mapped instance by primary key, for an in-place update or delete."""
-        stmt = select(self.model_class).where(self._pk_col == id)
-        return self.session.scalars(stmt).first()
+class Repository[
+    ModelT,
+    DTOT = ModelT,
+    CreateT = object,
+    UpdateT = object,
+    PKT = int,
+    SessionT: RepositorySession = Session,
+](ReadOnlyRepository[ModelT, DTOT, PKT, SessionT]):
+    """CRUD repository with async methods and explicit ``*_sync`` counterparts."""
 
     def _model_from_payload(self, payload: CreateT) -> ModelT:
-        """Build a model instance from a dataclass payload, skipping UNSET fields."""
         kwargs = {
-            f.name: getattr(payload, f.name)
-            for f in fields(cast("DataclassInstance", payload))
-            if hasattr(self.model_class, f.name)
-            and not isinstance(getattr(payload, f.name), UnsetType)
+            field.name: getattr(payload, field.name)
+            for field in fields(cast("DataclassInstance", payload))
+            if hasattr(self.model_class, field.name)
+            and not isinstance(getattr(payload, field.name), UnsetType)
         }
         return self.model_class(**kwargs)
 
-    def create(self, payload: CreateT, *, commit: bool | None = None) -> PKT:
+    async def _get_model_async(self, id: PKT) -> ModelT | None:
+        result = await self._async_session().execute(
+            select(self.model_class).where(self._pk_col == id)
+        )
+        return result.scalars().first()
+
+    def _get_model_sync(self, id: PKT) -> ModelT | None:
+        stmt = select(self.model_class).where(self._pk_col == id)
+        return self._sync_session().scalars(stmt).first()
+
+    async def create[AsyncSessionT: AsyncRepositorySession](
+        self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, AsyncSessionT]",
+        payload: CreateT,
+        *,
+        commit: bool | None = None,
+    ) -> PKT:
         """
-        Insert a record from a dataclass payload and flush.
+        Insert ``payload``, flush it, and return its primary key.
 
-        UNSET fields are omitted, so the column or model default applies.
-        `commit` overrides `autocommit` for this call.
-
-        Returns:
-            The new primary-key value, read back after the flush.
-
+        ``UNSET`` payload fields are omitted. ``commit`` overrides the
+        repository's ``autocommit`` setting for this operation only.
         """
+        session = self._async_session()
         model = self._model_from_payload(payload)
-        self._emit("create", "before", model, payload)
-        self.session.add(model)
-        self._flush()
-        self._emit("create", "after", model)
-        pk = getattr(model, self._pk_col.key)
-        self._commit(commit)
+        await self._emit_async("create", "before", model, payload)
+        session.add(model)
+        await self._flush_async()
+        await self._emit_async("create", "after", model)
+        pk = cast("PKT", getattr(model, self._pk_col.key))
+        await self._commit_async(commit)
         return pk
 
-    def update(self, id: PKT, payload: UpdateT, *, commit: bool | None = None) -> bool:
-        """
-        Apply a partial update from a dataclass payload and flush.
+    def create_sync(
+        self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, Session]",
+        payload: CreateT,
+        *,
+        commit: bool | None = None,
+    ) -> PKT:
+        """Synchronously insert ``payload``, flush it, and return its primary key."""
+        session = self._sync_session()
+        model = self._model_from_payload(payload)
+        self._emit_sync("create", "before", model, payload)
+        session.add(model)
+        self._flush_sync()
+        self._emit_sync("create", "after", model)
+        pk = cast("PKT", getattr(model, self._pk_col.key))
+        self._commit_sync(commit)
+        return pk
 
-        UNSET fields are left untouched; `None` is written as a real value
-        (SET NULL). `commit` overrides `autocommit` for this call.
+    @staticmethod
+    def _apply_payload(model: ModelT, payload: UpdateT) -> None:
+        for field in fields(cast("DataclassInstance", payload)):
+            value = getattr(payload, field.name)
+            if not isinstance(value, UnsetType) and hasattr(model, field.name):
+                setattr(model, field.name, value)
 
-        Returns:
-            True on success, False if no record has that primary key.
-
-        """
-        model = self._get_model(id)
+    async def update[AsyncSessionT: AsyncRepositorySession](
+        self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, AsyncSessionT]",
+        id: PKT,
+        payload: UpdateT,
+        *,
+        commit: bool | None = None,
+    ) -> bool:
+        """Apply non-``UNSET`` payload fields and report whether the row existed."""
+        model = await self._get_model_async(id)
         if model is None:
             return False
-        for f in fields(cast("DataclassInstance", payload)):
-            value = getattr(payload, f.name)
-            if not isinstance(value, UnsetType) and hasattr(model, f.name):
-                setattr(model, f.name, value)
-        self._emit("update", "before", model, payload)
-        self._flush()
-        self._emit("update", "after", model)
-        self._commit(commit)
+        self._apply_payload(model, payload)
+        await self._emit_async("update", "before", model, payload)
+        await self._flush_async()
+        await self._emit_async("update", "after", model)
+        await self._commit_async(commit)
         return True
 
-    def delete(self, id: PKT, *, commit: bool | None = None) -> bool:
-        """
-        Delete a record by primary key and flush.
-        `commit` overrides `autocommit` for this call.
-
-        Returns:
-            True on success, False if no record has that primary key.
-
-        """
-        model = self._get_model(id)
+    def update_sync(
+        self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, Session]",
+        id: PKT,
+        payload: UpdateT,
+        *,
+        commit: bool | None = None,
+    ) -> bool:
+        """Synchronously apply non-``UNSET`` payload fields."""
+        model = self._get_model_sync(id)
         if model is None:
             return False
-        self._emit("delete", "before", model)
-        self.session.delete(model)
-        self._flush()
-        self._emit("delete", "after", model)
-        self._commit(commit)
+        self._apply_payload(model, payload)
+        self._emit_sync("update", "before", model, payload)
+        self._flush_sync()
+        self._emit_sync("update", "after", model)
+        self._commit_sync(commit)
         return True
 
-    def bulk_create(
-        self, payloads: _list[CreateT], *, hooks: bool = False, commit: bool | None = None
+    async def delete[AsyncSessionT: AsyncRepositorySession](
+        self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, AsyncSessionT]",
+        id: PKT,
+        *,
+        commit: bool | None = None,
+    ) -> bool:
+        """Delete one row and report whether it existed."""
+        session = self._async_session()
+        model = await self._get_model_async(id)
+        if model is None:
+            return False
+        await self._emit_async("delete", "before", model)
+        await session.delete(model)
+        await self._flush_async()
+        await self._emit_async("delete", "after", model)
+        await self._commit_async(commit)
+        return True
+
+    def delete_sync(
+        self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, Session]",
+        id: PKT,
+        *,
+        commit: bool | None = None,
+    ) -> bool:
+        """Synchronously delete one row and report whether it existed."""
+        session = self._sync_session()
+        model = self._get_model_sync(id)
+        if model is None:
+            return False
+        self._emit_sync("delete", "before", model)
+        session.delete(model)
+        self._flush_sync()
+        self._emit_sync("delete", "after", model)
+        self._commit_sync(commit)
+        return True
+
+    async def bulk_create[AsyncSessionT: AsyncRepositorySession](
+        self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, AsyncSessionT]",
+        payloads: _list[CreateT],
+        *,
+        hooks: bool = False,
+        commit: bool | None = None,
     ) -> _list[PKT]:
         """
-        Insert many records from dataclass payloads in one flush; return their primary keys.
+        Insert payloads in one flush and return primary keys in input order.
 
-        UNSET fields are omitted per payload (as `create`). By default this is a
-        set-based fast path that fires no `@on("create", ...)` hooks. Pass
-        `hooks=True` to run the per-row create hooks (before each add, after the
-        flush) at the cost of the loop, when a payload needs them.
-
-        Returns:
-            The new primary-key values, in payload order, read back after the flush.
-
+        Set ``hooks=True`` to run create hooks for every payload. The default
+        uses the faster set-based path and skips those hooks.
         """
-        models = [self._model_from_payload(p) for p in payloads]
+        session = self._async_session()
+        models = [self._model_from_payload(payload) for payload in payloads]
         if hooks:
             for model, payload in zip(models, payloads, strict=True):
-                self._emit("create", "before", model, payload)
-        self.session.add_all(models)
-        self._flush()
+                await self._emit_async("create", "before", model, payload)
+        session.add_all(models)
+        await self._flush_async()
         if hooks:
             for model in models:
-                self._emit("create", "after", model)
-        self._commit(commit)
-        return [getattr(m, self._pk_col.key) for m in models]
+                await self._emit_async("create", "after", model)
+        await self._commit_async(commit)
+        return [cast("PKT", getattr(model, self._pk_col.key)) for model in models]
 
-    def update_where(
-        self,
-        *extra_filters: ColumnElement[bool],
+    def bulk_create_sync(
+        self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, Session]",
+        payloads: _list[CreateT],
+        *,
+        hooks: bool = False,
         commit: bool | None = None,
-        **values: object,
-    ) -> int:
-        """
-        Bulk-UPDATE every row matching the filters; return the number of rows changed.
+    ) -> _list[PKT]:
+        """Synchronously insert payloads in one flush and return their keys."""
+        session = self._sync_session()
+        models = [self._model_from_payload(payload) for payload in payloads]
+        if hooks:
+            for model, payload in zip(models, payloads, strict=True):
+                self._emit_sync("create", "before", model, payload)
+        session.add_all(models)
+        self._flush_sync()
+        if hooks:
+            for model in models:
+                self._emit_sync("create", "after", model)
+        self._commit_sync(commit)
+        return [cast("PKT", getattr(model, self._pk_col.key)) for model in models]
 
-        Set-based: no model is loaded and no `@on("update", ...)` hook fires. Pass
-        the new column values as keyword arguments and the row filters as
-        positional expressions, e.g.
-        `repo.update_where(Model.target_id == tid, is_active=False)`.
-
-        Raises:
-            ValueError: if called with no filters (a guard against updating the whole table).
-
-        """
+    def _update_where_stmt(
+        self, extra_filters: tuple[ColumnElement[bool], ...], values: dict[str, object]
+    ) -> Select:
         if not extra_filters:
             raise ValueError(
                 "update_where requires at least one filter (refusing a full-table update)"
             )
-        mapper = inspect(self.model_class)
+        mapper = cast("Mapper[ModelT]", inspect(self.model_class))
         for key in values:
             if key not in mapper.columns:
                 raise ValueError(
                     f"update_where: '{key}' is not a column of {self.model_class.__name__}"
                 )
-        stmt = (
+        return cast(
+            "Select",
             update(self.model_class)
             .where(*extra_filters)
             .values(**values)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False),
         )
-        result = self._run(lambda: self.session.execute(stmt))
-        self._commit(commit)
-        return cast("CursorResult[object]", result).rowcount
 
-    def delete_where(
-        self,
+    async def update_where[AsyncSessionT: AsyncRepositorySession](
+        self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, AsyncSessionT]",
         *extra_filters: ColumnElement[bool],
         commit: bool | None = None,
-        **filters: FilterValue,
+        **values: object,
     ) -> int:
-        """
-        Bulk-DELETE every row matching the filters; return the number of rows deleted.
+        """Await a guarded set-based update and return its affected-row count."""
+        stmt = self._update_where_stmt(extra_filters, values)
+        result = await self._run_async(lambda: self._async_session().execute(stmt))
+        await self._commit_async(commit)
+        return cast("CursorResult[object]", result).rowcount or 0
 
-        Filters combine the two forms the read methods use: equality `**filters`
-        keyed by attribute name (`delete_where(status="open")`) and arbitrary
-        `extra_filters` expressions (`delete_where(Task.created_at < cutoff)`).
+    def update_where_sync(
+        self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, Session]",
+        *extra_filters: ColumnElement[bool],
+        commit: bool | None = None,
+        **values: object,
+    ) -> int:
+        """Synchronously run a guarded set-based update."""
+        stmt = self._update_where_stmt(extra_filters, values)
+        result = self._run_sync(lambda: self._sync_session().execute(stmt))
+        self._commit_sync(commit)
+        return cast("CursorResult[object]", result).rowcount or 0
 
-        Set-based: no model is loaded and no `@on("delete", ...)` hook fires.
-
-        Raises:
-            ValueError: if called with no filters (a guard against emptying the table).
-
-        """
+    def _delete_where_stmt(
+        self, extra_filters: tuple[ColumnElement[bool], ...], filters: dict[str, FilterValue]
+    ) -> Select:
         if not extra_filters and not filters:
             raise ValueError(
                 "delete_where requires at least one filter (refusing a full-table delete)"
             )
-        stmt = (
+        return cast(
+            "Select",
             delete(self.model_class)
             .where(*self._filter_clauses(**filters), *extra_filters)
-            .execution_options(synchronize_session=False)
+            .execution_options(synchronize_session=False),
         )
-        result = self._run(lambda: self.session.execute(stmt))
-        self._commit(commit)
-        return cast("CursorResult[object]", result).rowcount
+
+    async def delete_where[AsyncSessionT: AsyncRepositorySession](
+        self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, AsyncSessionT]",
+        *extra_filters: ColumnElement[bool],
+        commit: bool | None = None,
+        **filters: FilterValue,
+    ) -> int:
+        """Await a guarded set-based delete and return its affected-row count."""
+        stmt = self._delete_where_stmt(extra_filters, filters)
+        result = await self._run_async(lambda: self._async_session().execute(stmt))
+        await self._commit_async(commit)
+        return cast("CursorResult[object]", result).rowcount or 0
+
+    def delete_where_sync(
+        self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, Session]",
+        *extra_filters: ColumnElement[bool],
+        commit: bool | None = None,
+        **filters: FilterValue,
+    ) -> int:
+        """Synchronously run a guarded set-based delete."""
+        stmt = self._delete_where_stmt(extra_filters, filters)
+        result = self._run_sync(lambda: self._sync_session().execute(stmt))
+        self._commit_sync(commit)
+        return cast("CursorResult[object]", result).rowcount or 0

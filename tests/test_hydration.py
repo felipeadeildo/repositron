@@ -15,13 +15,13 @@ class UserDataclassRepo(Repository[User, UserDTO]):
 
 def test_model_as_dto_returns_the_model_instance(session: Session, seed_users: list[User]):
     repo = UserModelAsDTORepo(session)
-    got = repo.get(seed_users[0].id)
+    got = repo.get_sync(seed_users[0].id)
     assert got is seed_users[0]  # identity: no hydration, the model itself
 
 
 def test_dataclass_dto_built_by_field_name(session: Session, seed_users: list[User]):
     repo = UserDataclassRepo(session)
-    got = repo.get(seed_users[0].id)
+    got = repo.get_sync(seed_users[0].id)
     assert isinstance(got, UserDTO)
     assert (got.name, got.email, got.age) == ("Ada", "ada@example.com", 36)
 
@@ -37,7 +37,7 @@ def test_pydantic_dto_via_model_validate(session: Session, seed_users: list[User
     class PydanticRepo(Repository[User, UserOut]):
         pass
 
-    got = PydanticRepo(session).get(seed_users[0].id)
+    got = PydanticRepo(session).get_sync(seed_users[0].id)
     assert isinstance(got, UserOut)
     assert got.name == "Ada"
 
@@ -46,7 +46,7 @@ def test_field_mapping_renames_on_dataclass_hydration(
     session: Session, seed_accounts: list[Account]
 ):
     # model column `mention_rank` must land in DTO field `rank`
-    got = AccountRepo(session).get(seed_accounts[0].account_id)
+    got = AccountRepo(session).get_sync(seed_accounts[0].account_id)
     assert isinstance(got, AccountDTO)
     assert got.rank == 3
 
@@ -59,4 +59,4 @@ def test_unsupported_dto_raises_not_implemented(session: Session, seed_users: li
         pass
 
     with pytest.raises(NotImplementedError):
-        OpaqueRepo(session).get(seed_users[0].id)
+        OpaqueRepo(session).get_sync(seed_users[0].id)

@@ -1,38 +1,16 @@
-"""
-Lifecycle hooks: tag a method with `@on` to run it inside a create, update,
-delete, or read, with no method override and no `super()` chaining.
-
-```python
-class ArticleRepository(Repository[Article, ...]):
-    @on("create", mode="before")
-    def stamp_published(self, model, payload):
-        model.published_at = datetime.now(UTC)
-```
-
-Hooks compose: stack `@on` for several events on one method, and hooks from
-mixins and base classes all fire, in base-to-subclass order. `Repository` lists
-every event and the arguments it passes.
-"""
+"""Lifecycle hooks and the transaction wrapper for custom writes."""
 
 import functools
-from collections.abc import Callable
-from typing import Concatenate, Literal, cast
-
-from repositron.base import Writable
+import inspect
+from collections.abc import Awaitable, Callable
+from typing import Concatenate, Literal, Protocol, cast, overload
 
 HookEvent = Literal["create", "update", "delete", "hydrate"]
-"""The repository operation a hook attaches to."""
-
 HookMode = Literal["before", "build", "after"]
-"""When a hook runs: `before`/`after` the operation, or `build` (hydrate only) to construct the DTO."""  # noqa: E501
-
 type HookKey = tuple[HookEvent, HookMode]
+type HookRegistry = dict[HookKey, list[str]]
 
 BUILD_HOOK: HookKey = ("hydrate", "build")
-"""The hydrate `build` hook. Unlike before/after, only the most-derived one runs."""
-
-# before/after on every event, except hydrate/before (nothing precedes a read's DTO build);
-# build is hydrate-only (writes have no DTO to construct).
 VALID_HOOKS: frozenset[HookKey] = frozenset(
     {
         ("create", "before"),
@@ -45,19 +23,23 @@ VALID_HOOKS: frozenset[HookKey] = frozenset(
         BUILD_HOOK,
     }
 )
-"""Valid (event, mode) pairs: before/after on every event (minus hydrate/before), plus hydrate/build."""  # noqa: E501
-
 _HOOK_ATTR = "__repositron_hooks__"
 
 
-def on(event: HookEvent, *, mode: HookMode) -> Callable[[Callable], Callable]:
-    """
-    Tag a repository method to run on `event` at `mode`.
+class _SyncWriteRepository(Protocol):
+    def _flush_sync(self) -> None: ...
+    def _run_sync[R](self, op: Callable[[], R]) -> R: ...
+    def _commit_sync(self, commit: bool | None) -> None: ...
 
-    The method is dispatched by the repository, not called directly; its
-    signature per event is documented on `Repository`. Stack `@on` to register
-    the same method on several events.
-    """
+
+class _AsyncWriteRepository(Protocol):
+    async def _flush_async(self) -> None: ...
+    async def _run_async[R](self, op: Callable[[], Awaitable[R]]) -> R: ...
+    async def _commit_async(self, commit: bool | None) -> None: ...
+
+
+def on(event: HookEvent, *, mode: HookMode) -> Callable[[Callable], Callable]:
+    """Register a method as a lifecycle hook."""
 
     def mark(func: Callable) -> Callable:
         existing = getattr(func, _HOOK_ATTR, ())
@@ -67,33 +49,15 @@ def on(event: HookEvent, *, mode: HookMode) -> Callable[[Callable], Callable]:
     return mark
 
 
-type HookRegistry = dict[HookKey, list[str]]
-"""Collected hooks: `registry[(event, mode)]` is the ordered list of method names to run."""
-
-
 def collect_hooks(cls: type) -> HookRegistry:
-    """
-    Build the hook registry for `cls` by scanning its MRO base-to-subclass.
-
-    Stores method names (not functions), so a subclass override of a tagged
-    method is the one that runs. A base class's hook runs before a subclass's.
-
-    The `build` hook is single-winner: the most-derived one replaces any
-    inherited build, so a subclass's build overrides the base default.
-
-    Raises:
-        TypeError: if a method is tagged with an unknown (event, mode) pair.
-
-    """
+    """Collect tagged hook names in base-to-subclass order."""
     registry: HookRegistry = {}
-    # reversed(MRO) is object -> base -> subclass: outermost base hooks run first.
     for klass in reversed(cls.__mro__):
         for name, member in vars(klass).items():
             for key in getattr(member, _HOOK_ATTR, ()):
                 if key not in VALID_HOOKS:
                     raise TypeError(f"{cls.__name__}.{name}: unknown hook {key!r}")
                 if key == BUILD_HOOK:
-                    # Single winner: most-derived build replaces the inherited one.
                     registry[key] = [name]
                     continue
                 names = registry.setdefault(key, [])
@@ -102,43 +66,57 @@ def collect_hooks(cls: type) -> HookRegistry:
     return registry
 
 
-def writes[T: Writable, **P, R](
+@overload
+def writes[T, **P, R](
+    method: Callable[Concatenate[T, P], Awaitable[R]],
+) -> Callable[Concatenate[T, P], Awaitable[R]]: ...
+
+
+@overload
+def writes[T, **P, R](
     method: Callable[Concatenate[T, P], R],
-) -> Callable[Concatenate[T, P], R]:
+) -> Callable[Concatenate[T, P], R]: ...
+
+
+def writes(method: Callable[..., object]) -> Callable[..., object]:
     """
-    Give a custom write method the same flush/commit/rollback as the built-ins.
+    Apply the repository's flush, commit, and rollback policy to a custom write.
 
-    The body only does the session work:
-
-    ```python
-    @writes
-    def archive(self, id: int) -> None:
-        self.session.add(...)  # flushed for you; rolled back on error
-    ```
-
-    Commit follows the usual rules: a flush, plus a commit if the repo is
-    `autocommit=True`. Declare `*, commit: bool | None = None` to also let
-    callers override per call (`repo.upsert(p, commit=True)`); the wrapper
-    consumes it, so the body never has to handle it.
-
-    ```python
-    @writes
-    def upsert(self, payload, *, commit: bool | None = None) -> None:
-        self.session.execute(...)
-    ```
+    A synchronous function is for ``*_sync`` use. An ``async def`` function is
+    for the awaited API. The repository raises a clear error if callers use the
+    function through the wrong session mode.
     """
+    if inspect.iscoroutinefunction(method):
 
-    @functools.wraps(method)
-    def wrapper(self: T, *args: P.args, **kwargs: P.kwargs) -> R:
-        commit = cast("bool | None", kwargs.pop("commit", None))
+        @functools.wraps(method)
+        async def async_wrapper(self: object, *args: object, **kwargs: object) -> object:
+            commit = cast("bool | None", kwargs.pop("commit", None))
+            repo = cast("_AsyncWriteRepository", self)
+            async_method = cast("Callable[..., Awaitable[object]]", method)
 
-        def op() -> R:
-            result = method(self, *args, **kwargs)
-            self.session.flush()
+            async def op() -> object:
+                result = await async_method(repo, *args, **kwargs)
+                await repo._flush_async()
+                return result
+
+            result = await repo._run_async(op)
+            await repo._commit_async(commit)
             return result
 
-        result = self._run(op)
-        self._commit(commit)
+        return async_wrapper
+
+    @functools.wraps(method)
+    def sync_wrapper(self: object, *args: object, **kwargs: object) -> object:
+        commit = cast("bool | None", kwargs.pop("commit", None))
+        repo = cast("_SyncWriteRepository", self)
+
+        def op() -> object:
+            result = method(repo, *args, **kwargs)
+            repo._flush_sync()
+            return result
+
+        result = repo._run_sync(op)
+        repo._commit_sync(commit)
         return result
 
-    return wrapper
+    return sync_wrapper

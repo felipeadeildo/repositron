@@ -69,7 +69,7 @@ from fastapi import Depends
 
 @app.get("/tasks")
 def list_tasks(repo: Annotated[TaskRepository, Depends(get_repo)]) -> list[TaskDTO]:
-    return repo.list(order_by=[Task.created_at.desc(), Task.id])
+    return repo.list_sync(order_by=[Task.created_at.desc(), Task.id])
 ```
 
 `frozen=True, slots=True` is a good default: immutable, low-overhead, and a clear
@@ -98,8 +98,8 @@ class WorkspaceRepository(Repository[Workspace]):   # DTO defaults to Workspace
     pass
 
 
-repo.get(1)                 # Workspace | None
-repo.list(name="Acme")      # list[Workspace]
+repo.get_sync(1)                 # Workspace | None
+repo.list_sync(name="Acme")      # list[Workspace]
 ```
 
 This is the lightest path in CPU terms, since nothing is copied. The trade-off is
@@ -128,7 +128,7 @@ class TaskOut(BaseModel):
 
 class TaskRepository(Repository[Task, TaskOut]): ...
 
-repo.list()   # list[TaskOut], ready to return over HTTP
+repo.list_sync()   # list[TaskOut], ready to return over HTTP
 ```
 
 The `from_attributes=True` config is what lets Pydantic read straight off the

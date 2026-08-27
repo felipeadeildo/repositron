@@ -4,9 +4,11 @@ icon: lucide/rocket
 
 # Get started
 
-This page takes you from an empty file to a working, fully typed repository.
-Read it once, start to finish. After that, the [guides](guides/index.md) cover
-each capability in depth.
+This page builds a working, fully typed synchronous repository around a
+caller-owned SQLAlchemy `Session`. It assumes your application already creates
+the engine and runs migrations. Read it once, start to finish. After that, the
+[guides](guides/index.md) cover each capability in depth. For `AsyncSession`,
+start with [async and sync](guides/async.md).
 
 ## Install
 
@@ -60,8 +62,8 @@ class Task(Base):
 
 ## Declare the shapes
 
-A repository is described entirely by its type parameters. There are four, and
-only the first is required:
+A repository is described by type parameters. Most synchronous repositories use
+the first four:
 
 ```python
 Repository[Model, DTO, Create, Update]
@@ -69,8 +71,15 @@ Repository[Model, DTO, Create, Update]
 
 `Model` is your SQLAlchemy class. `DTO` is what reads hand back. `Create` and
 `Update` are the dataclasses your writes accept. We will use all four so the
-full picture is on the table, then come back later and learn how to drop the
-ones you do not need.
+example stays focused. The complete signature also has `PK` and `SessionT`:
+
+```python
+Repository[Model, DTO = Model, Create = object, Update = object, PK = int, SessionT = Session]
+```
+
+`PK` is the fifth parameter and `SessionT` is the last. Leave both at their
+defaults for an integer-keyed synchronous repository. The [primary key guide](guides/primary-keys.md)
+covers other keys and the [async guide](guides/async.md) shows `AsyncSession`.
 
 ```python
 from dataclasses import dataclass
@@ -127,16 +136,16 @@ Hand the repository a session and every method is already there, already typed:
 ```python
 repo = TaskRepository(session)
 
-repo.get(1)                                  # TaskDTO | None
-repo.list(workspace_id=42, status="open")    # list[TaskDTO]
-repo.count(workspace_id=42)                  # int
-repo.exists(1)                               # bool
-repo.create(TaskCreate(workspace_id=42, title="Ship the docs"))  # int (new id)
-repo.update(1, TaskUpdate(status="done"))    # True; title untouched
-repo.delete(1)                               # bool
+repo.get_sync(1)                                  # TaskDTO | None
+repo.list_sync(workspace_id=42, status="open")    # list[TaskDTO]
+repo.count_sync(workspace_id=42)                  # int
+repo.exists_sync(1)                               # bool
+repo.create_sync(TaskCreate(workspace_id=42, title="Ship the docs"))  # int (new id)
+repo.update_sync(1, TaskUpdate(status="done"))    # True; title untouched
+repo.delete_sync(1)                               # bool
 ```
 
-Hover any of those calls in your editor. `repo.list()` is `list[TaskDTO]`, not
+Hover any of those calls in your editor. `repo.list_sync()` is `list[TaskDTO]`, not
 `list[Any]`. The same object you return here is the object your web framework
 serializes, so there is no second schema to keep in step.
 
@@ -144,10 +153,11 @@ serializes, so there is no second schema to keep in step.
     repositron never opens or closes the session, and by default writes only
     `flush`, leaving when to commit and roll back to your application. When you
     do want a write committed, opt in with `Repository(session, autocommit=True)`
-    or per call with `repo.create(payload, commit=True)`; see
-    [transactions](guides/updates.md#transactions). One repository instance holds
-    no per-call state, so it is safe to build once and inject everywhere. This
-    boundary is one of the [design principles](reference.md#design-principles).
+    or per call with `repo.create_sync(payload, commit=True)`; see
+    [transactions](guides/updates.md#transactions). A repository wraps that
+    session, so its lifetime and concurrency rules are the session's rules.
+    Create or inject the repository within the request, job, or task that owns
+    the session. This boundary is one of the [design principles](reference.md#design-principles).
 
 ## Where to go next
 

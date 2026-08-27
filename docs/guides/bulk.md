@@ -8,9 +8,11 @@ icon: lucide/layers
 the right shape for a request that edits a single record, and the wrong one for
 work measured in rows: importing a thousand tasks, archiving every done task in a
 workspace, clearing a tag off a batch. Looping the per-row methods means a flush
-and a hook pass per row; what you want is one statement.
+and a hook pass per row.
 
-These three methods are that statement, set-based and typed.
+`update_where` and `delete_where` issue one set-based SQL statement. `bulk_create`
+creates ORM models and flushes them together once, which preserves generated keys
+and can use SQLAlchemy's insert batching when the dialect supports it.
 
 ??? note "Setup"
 
@@ -50,10 +52,12 @@ These three methods are that statement, set-based and typed.
 ## Inserting many rows
 
 `bulk_create` takes a list of the same payloads `create` takes, builds every
-model, and flushes once. It returns the new primary keys in payload order:
+model, and flushes once. It returns the new primary keys in payload order. It
+does not promise one `INSERT` statement; the dialect and SQLAlchemy choose how
+to send the batch:
 
 ```python
-ids = repo.bulk_create([
+ids = repo.bulk_create_sync([
     TaskCreate(workspace_id=1, title="Write the spec"),
     TaskCreate(workspace_id=1, title="Review the spec"),
     TaskCreate(workspace_id=1, title="Ship the spec"),
@@ -77,17 +81,17 @@ return the number of rows the statement touched:
 
 ```python
 # Archive every done task in a workspace.
-n = repo.update_where(
+n = repo.update_where_sync(
     Task.workspace_id == 1,
     Task.status == "done",
     status="archived",
 )   # n == rows updated
 
 # Reassign a whole workspace to one owner.
-repo.update_where(Task.workspace_id == 1, assignee_id=7)
+repo.update_where_sync(Task.workspace_id == 1, assignee_id=7)
 
 # Drop every task assigned to a member who left.
-removed = repo.delete_where(Task.assignee_id == 42)
+removed = repo.delete_where_sync(Task.assignee_id == 42)
 ```
 
 Because they speak in filters and values rather than instances, the keyword
@@ -95,7 +99,7 @@ arguments to `update_where` are the `SET` clause, not a `WHERE`. The row selecti
 is the positional part:
 
 ```python
-repo.update_where(Task.status == "open", status="in_progress")
+repo.update_where_sync(Task.status == "open", status="in_progress")
 #                 └── which rows ──┘       └── what to set ──┘
 ```
 
@@ -104,8 +108,8 @@ equality `**filters` the read methods do, mixed freely with positional
 expressions:
 
 ```python
-repo.delete_where(status="open")                          # equality shorthand
-repo.delete_where(Task.created_at < cutoff, status="open")  # mix the two forms
+repo.delete_where_sync(status="open")                          # equality shorthand
+repo.delete_where_sync(Task.created_at < cutoff, status="open")  # mix the two forms
 ```
 
 ### The empty-filter guard
@@ -115,8 +119,8 @@ is almost never what a caller meant to type. Both raise `ValueError` rather than
 silently rewriting or emptying the table:
 
 ```python
-repo.update_where(status="archived")   # ValueError: requires at least one filter
-repo.delete_where()                    # ValueError: requires at least one filter
+repo.update_where_sync(status="archived")   # ValueError: requires at least one filter
+repo.delete_where_sync()                    # ValueError: requires at least one filter
 ```
 
 To act on the whole table on purpose, say so with a filter that matches it, e.g.
@@ -134,11 +138,11 @@ has none to receive. That is inherent to a set-based statement, and the reason t
 reach for these methods at all.
 
 `bulk_create` does build model instances, so it *can* fire the create hooks, but
-it skips them by default to stay a single fast pass. When a payload genuinely
-needs its create hooks, opt in with `hooks=True`:
+it skips them by default to keep one ORM flush. When a payload genuinely needs
+its create hooks, opt in with `hooks=True`:
 
 ```python
-ids = repo.bulk_create(payloads, hooks=True)   # ("create", "before") per model, then one flush
+ids = repo.bulk_create_sync(payloads, hooks=True)   # ("create", "before") per model, then one flush
 ```
 
 With `hooks=True`, each `("create", "before")` hook runs before the batch is
@@ -152,8 +156,8 @@ All three flush and leave the commit to you, exactly like the per-row writes. Pa
 [committing](updates.md#transactions) for the full table.
 
 ```python
-repo.bulk_create(payloads, commit=True)
-repo.update_where(Task.status == "done", status="archived", commit=True)
+repo.bulk_create_sync(payloads, commit=True)
+repo.update_where_sync(Task.status == "done", status="archived", commit=True)
 ```
 
 ## When not to use these

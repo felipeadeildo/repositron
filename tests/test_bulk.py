@@ -13,7 +13,7 @@ def _fetch(session: Session, uid: int) -> User:
 
 
 def test_bulk_create_returns_pks_in_order(session: Session):
-    ids = UserRepo(session).bulk_create(
+    ids = UserRepo(session).bulk_create_sync(
         [UserCreate(name="Ada"), UserCreate(name="Linus"), UserCreate(name="Grace")]
     )
     assert len(ids) == 3
@@ -23,11 +23,11 @@ def test_bulk_create_returns_pks_in_order(session: Session):
 
 
 def test_bulk_create_empty_is_noop(session: Session):
-    assert UserRepo(session).bulk_create([]) == []
+    assert UserRepo(session).bulk_create_sync([]) == []
 
 
 def test_bulk_create_omits_unset(session: Session):
-    (uid,) = UserRepo(session).bulk_create([UserCreate(name="Ada")])  # is_active UNSET
+    (uid,) = UserRepo(session).bulk_create_sync([UserCreate(name="Ada")])  # is_active UNSET
     assert _fetch(session, uid).is_active is True  # column default applied
 
 
@@ -39,7 +39,7 @@ def test_bulk_create_skips_hooks_by_default(session: Session):
         def _mark(self, model, payload):
             fired.append(model.name)
 
-    HookedRepo(session).bulk_create([UserCreate(name="Ada")])
+    HookedRepo(session).bulk_create_sync([UserCreate(name="Ada")])
     assert fired == []
 
 
@@ -51,47 +51,49 @@ def test_bulk_create_fires_hooks_when_asked(session: Session):
         def _mark(self, model, payload):
             fired.append(model.name)
 
-    HookedRepo(session).bulk_create([UserCreate(name="Ada"), UserCreate(name="Linus")], hooks=True)
+    HookedRepo(session).bulk_create_sync(
+        [UserCreate(name="Ada"), UserCreate(name="Linus")], hooks=True
+    )
     assert fired == ["Ada", "Linus"]
 
 
 def test_update_where_returns_rowcount(session: Session, seed_users):
     repo = UserRepo(session)
-    n = repo.update_where(User.is_active.is_(True), is_active=False)
+    n = repo.update_where_sync(User.is_active.is_(True), is_active=False)
     assert n == 2  # Ada + Grace were active
     assert session.scalars(select(User).where(User.is_active.is_(True))).all() == []
 
 
 def test_update_where_refuses_full_table(session: Session):
     with pytest.raises(ValueError, match="requires at least one filter"):
-        UserRepo(session).update_where(is_active=False)
+        UserRepo(session).update_where_sync(is_active=False)
 
 
 def test_update_where_rejects_unknown_column(session: Session):
     with pytest.raises(ValueError, match="'nope' is not a column of User"):
-        UserRepo(session).update_where(User.is_active.is_(True), nope="x")
+        UserRepo(session).update_where_sync(User.is_active.is_(True), nope="x")
 
 
 def test_delete_where_returns_rowcount(session: Session, seed_users):
     repo = UserRepo(session)
-    n = repo.delete_where(User.is_active.is_(False))
+    n = repo.delete_where_sync(User.is_active.is_(False))
     assert n == 1  # only Linus was inactive
     assert session.get(User, seed_users[0].id) is not None  # Ada survives
 
 
 def test_delete_where_equality_kwargs(session: Session, seed_users):
     repo = UserRepo(session)
-    n = repo.delete_where(is_active=False)  # status-style kwarg -> User.is_active == False
+    n = repo.delete_where_sync(is_active=False)  # status-style kwarg -> User.is_active == False
     assert n == 1  # only Linus
     assert session.scalars(select(User).where(User.is_active.is_(False))).all() == []
 
 
 def test_delete_where_kwargs_and_positional_combine(session: Session, seed_users):
     repo = UserRepo(session)
-    n = repo.delete_where(User.age > 80, is_active=True)  # positional expr + equality kwarg
+    n = repo.delete_where_sync(User.age > 80, is_active=True)  # positional expr + equality kwarg
     assert n == 1  # Grace (active, 85); Ada (active, 36) survives
 
 
 def test_delete_where_refuses_full_table(session: Session):
     with pytest.raises(ValueError, match="requires at least one filter"):
-        UserRepo(session).delete_where()
+        UserRepo(session).delete_where_sync()

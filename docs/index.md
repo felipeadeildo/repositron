@@ -100,7 +100,7 @@ generically, and types it against your model and your return shape.
 
     ---
 
-    `repo.list()` is `list[TaskDTO]`, and your editor knows it. No casts, no
+    `repo.list_sync()` is `list[TaskDTO]`, and your editor knows it. No casts, no
     `Any`. The return value is the same object your API serializes.
 
 -   :material-filter-variant:{ .lg .middle } __Two ways to filter, one call__
@@ -125,7 +125,7 @@ generically, and types it against your model and your return shape.
 
     ---
 
-    `repo[Card].list()` selects just that shape's columns, for one call, without
+    `repo[Card].list_sync()` selects just that shape's columns, for one call, without
     touching the injected repository.
 
     [:octicons-arrow-right-24: Projection](guides/projection.md)

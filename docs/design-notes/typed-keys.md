@@ -57,7 +57,7 @@ A quick timeline of how typing for ORMs got to where it is:
 | 3.8 | [544](https://peps.python.org/pep-0544/) | `Protocol` (structural typing) and `TypedDict`. |
 | 3.11 | [681](https://peps.python.org/pep-0681/) | `dataclass_transform`. The breakthrough that let SQLAlchemy 2.0 and Pydantic type their models, by telling the checker "treat my magic class like a dataclass". |
 | 3.12 | [695](https://peps.python.org/pep-0695/) | The clean `class Repository[ModelT]:` syntax. Better to read; the inference rules did not change. |
-| 3.13 | [696](https://peps.python.org/pep-0696/) | **Defaults for type parameters.** This is what lets `PKT = int` sit quietly at the end, so the common case never writes it. It is also why repositron requires Python 3.13. |
+| 3.13 | [696](https://peps.python.org/pep-0696/) | **Defaults for type parameters.** This is what lets `PKT = int` sit after the model, DTO, and payload parameters, so the common case never writes it. It is also why repositron requires Python 3.13. |
 
 The two features that *would* close the gap, indexed access types
 (`Model["id"]`) and a general `typeof`, are discussed in the `python/typing`
@@ -112,7 +112,7 @@ class TaskDTO:
     title: str
     status: str
 
-repo.first()   # -> TaskDTO, always all three columns
+repo.first_sync()   # -> TaskDTO, always all three columns
 ```
 
 That is fine until you only need `title`. The query still selects every
@@ -136,7 +136,7 @@ The breakthrough was to stop trying to encode the shape in the *class* and encod
 it per *call*, with `__getitem__`:
 
 ```python
-repo[TaskCard].first()   # SELECT title; returns TaskCard, typed
+repo[TaskCard].first_sync()   # SELECT title; returns TaskCard, typed
 ```
 
 `repo[Shape]` returns a lightweight clone of the repository bound to `Shape` for
@@ -148,8 +148,8 @@ mechanism are split across the two worlds that can each serve one of them. The
 [projection recipe](../guides/projection.md) covers it from the user's side.
 
 It is a small amount of extra code, and it buys the signature we wanted all
-along: `repo[TaskCard].first(...) -> TaskCard | None`. The alternatives we
-weighed and rejected, currying (`repo.first(Shape)(...)`) or a `shape=` keyword
+along: `repo[TaskCard].first_sync(...) -> TaskCard | None`. The alternatives we
+weighed and rejected, currying (`repo.first_sync(Shape)(...)`) or a `shape=` keyword
 argument, either traded one kind of boilerplate for another (a fan of
 `_FirstCurried` / `_ListCurried` protocols to keep the curried calls typed) or
 gave up the projection sugar entirely. `repo[Shape]` reads cleanly at the call
@@ -168,10 +168,11 @@ Given the constraint, the goal was the least boilerplate that still type-checks
 honestly:
 
 - **`PKT` defaults to `int`.** Most tables are keyed by an integer, so most
-  repositories declare nothing and still get a checked id, `repo.get("oops")` is
+  repositories declare nothing and still get a checked id, `repo.get_sync("oops")` is
   an error with zero extra typing.
-- **`PKT` is the last type parameter.** A non-int key costs exactly one token
-  (`str`, `uuid.UUID`) in a slot the common case never touches.
+- **`PKT` follows the model, DTO, and payload parameters.** `SessionT` comes
+  after it to choose sync or async execution. A non-int key still costs one
+  token (`str`, `uuid.UUID`) in the usual synchronous declaration.
 - **`pk_column` accepts a column reference at runtime.** `pk_column = Page.url_hash`
   is checked against the model and reads naturally, even though, per the rules
   above, it cannot feed the static key type. That stays in `PKT`.

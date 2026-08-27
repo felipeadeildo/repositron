@@ -99,9 +99,9 @@ class TaskUpdate:
 Now the three outcomes are all expressible, and they read exactly as they mean:
 
 ```python hl_lines="2"
-repo.update(1, TaskUpdate(status="done"))      # assignee untouched
-repo.update(1, TaskUpdate(assignee_id=None))   # unassign: assignee_id becomes NULL
-repo.update(1, TaskUpdate())                    # a no-op write
+repo.update_sync(1, TaskUpdate(status="done"))      # assignee untouched
+repo.update_sync(1, TaskUpdate(assignee_id=None))   # unassign: assignee_id becomes NULL
+repo.update_sync(1, TaskUpdate())                    # a no-op write
 ```
 
 Under the hood, `update` walks the payload's fields, skips any that are still
@@ -123,8 +123,8 @@ class TaskCreate:
     assignee_id: int | None | UnsetType = UNSET
 
 
-repo.create(TaskCreate(workspace_id=1, title="Ship docs"))   # description uses its default
-repo.create(TaskCreate(workspace_id=1, title="Ship docs", description="for the v0.3 release"))
+repo.create_sync(TaskCreate(workspace_id=1, title="Ship docs"))   # description uses its default
+repo.create_sync(TaskCreate(workspace_id=1, title="Ship docs", description="for the v0.3 release"))
 ```
 
 This is handy at the boundary between an HTTP layer and the repository: an
@@ -146,7 +146,7 @@ so a missing record is an ordinary boolean to handle, not an exception to catch:
 
 ```python
 # NotFound is your application's own exception, e.g. mapped to an HTTP 404.
-if not repo.update(task_id, TaskUpdate(status="done")):
+if not repo.update_sync(task_id, TaskUpdate(status="done")):
     raise NotFound(task_id)
 ```
 
@@ -160,9 +160,9 @@ call.
 
 ```python
 repo = TaskRepository(session, autocommit=True)   # every write commits
-repo.create(TaskCreate(workspace_id=1, title="Ship docs"))
+repo.create_sync(TaskCreate(workspace_id=1, title="Ship docs"))
 
-task_id = repo.create(TaskCreate(workspace_id=1, title="Index attachments"), commit=True)   # just this one
+task_id = repo.create_sync(TaskCreate(workspace_id=1, title="Index attachments"), commit=True)   # just this one
 worker.enqueue(task_id)   # a separate process only sees committed rows
 ```
 

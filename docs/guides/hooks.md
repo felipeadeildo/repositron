@@ -30,6 +30,8 @@ this page.
     from sqlalchemy import ForeignKey
     from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+    from repositron import UNSET, UnsetType
+
 
     class Base(DeclarativeBase): ...
 
@@ -83,11 +85,16 @@ this page.
 
     @dataclass(frozen=True)
     class TaskUpdate:
-        title: str | None = None
-        description: str | None = None
-        status: str | None = None
-        assignee_id: int | None = None
+        title: str | UnsetType = UNSET
+        description: str | None | UnsetType = UNSET
+        status: str | UnsetType = UNSET
+        assignee_id: int | None | UnsetType = UNSET
     ```
+
+The examples below use a synchronous `Session`. For `AsyncSession`, bind the
+repository to `AsyncSession`, make hooks `async def` when they perform database
+I/O, and await the relevant session call. The [async and sync guide](async.md)
+covers session lifetime and relationship loading.
 
 ```python hl_lines="6 8-9"
 from datetime import UTC, datetime
@@ -135,6 +142,35 @@ arguments, the model and, where it applies, the payload or the built DTO.
 | `"hydrate", "build"` | to construct the DTO, on every read        | `model`          | the DTO |
 | `"hydrate", "after"` | after the DTO is built, on every read      | `model, dto`     | the DTO |
 
+## Async hooks
+
+An async hook may query through the session in the same transaction. The
+repository awaits it before moving to the next lifecycle step:
+
+```python
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class AsyncTaskRepository(
+    Repository[Task, TaskDTO, TaskCreate, TaskUpdate, int, AsyncSession]
+):
+    @on("create", mode="before")
+    async def reject_duplicate_title(self, model: Task, payload: TaskCreate) -> None:
+        existing_id = await self.session.scalar(
+            select(Task.id).where(
+                Task.workspace_id == model.workspace_id,
+                Task.title == model.title,
+            )
+        )
+        if existing_id is not None:
+            raise ValueError("A task with this title already exists in the workspace")
+```
+
+An async `hydrate` hook follows the same rule. Be careful with hooks that query
+per model: a list of 100 rows can otherwise execute 100 extra queries. Prefer a
+custom query that preloads or aggregates that data when enriching a collection.
+
 `before` runs while the row is still being shaped, the place to set a column or
 derive a default. `after` runs once the flush has assigned the primary key, which
 is when you can write related rows that point back to it:
@@ -152,6 +188,13 @@ class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
 That `after` hook shares the repository's transaction, so the audit row flushes
 and commits together with the task. (When you want a write to *not* commit yet,
 see [transactions](updates.md#transactions).)
+
+!!! warning "Errors in after-hooks"
+
+    A write's rollback wrapper covers database work through its flush. An
+    exception raised by an `after` hook happens after that flush, so it does not
+    trigger the repository's automatic rollback. Roll the caller-owned session
+    back yourself if the operation must be abandoned.
 
 `before` hooks mutate the model in place; nothing is returned. A common use is
 normalizing input regardless of how the caller spelled it:
@@ -252,7 +295,7 @@ class TaskRefRepository(Repository[Task, str]):
         return model.title
 
 
-repo.get(task_id)   # str | None, not a Task
+repo.get_sync(task_id)   # str | None, not a Task
 ```
 
 Unlike `before` and `after`, which chain, `build` has a single winner: the

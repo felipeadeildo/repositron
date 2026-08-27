@@ -67,9 +67,9 @@ take an `int`, and `create` returns one:
 ```python
 repo = TaskRepository(session)
 
-repo.get(1)          # TaskDTO | None
-repo.exists(1)       # bool
-repo.get("1")        # type error: expected int, got str
+repo.get_sync(1)          # TaskDTO | None
+repo.exists_sync(1)       # bool
+repo.get_sync("1")        # type error: expected int, got str
 ```
 
 That last line is the point: because the key type is part of the repository's
@@ -79,9 +79,10 @@ declaration.
 
 ## A key that is not an `int`
 
-When the key is a `str`, a `uuid`, or anything else, declare its type as the
-**last** type parameter. The slot is named `PKT` and it sits after the others so
-the common case never has to mention it.
+When the key is a `str`, a `uuid`, or anything else, declare its type in the
+`PK` slot. On `Repository`, it is the fifth parameter, immediately before the
+optional `SessionT`; on `ReadOnlyRepository`, it is the third. `SessionT`
+defaults to synchronous `Session`, so the common case still does not mention it.
 
 On a read-only repository it is the third parameter. A `Page` cache, keyed by
 the hash of a fetched URL, is a natural `str` key:
@@ -104,8 +105,8 @@ class PageRepository(ReadOnlyRepository[Page, PageDTO, str]):
     pk_column = "url_hash"
 
 
-repo.get("a1b2c3")   # PageDTO | None
-repo.get(123)        # type error: expected str, got int
+repo.get_sync("a1b2c3")   # PageDTO | None
+repo.get_sync(123)        # type error: expected str, got int
 ```
 
 A `uuid` key on a full-CRUD repository is no different, name `uuid.UUID` as the
@@ -146,8 +147,8 @@ class ApiTokenRepository(
     pk_column = "token_id"
 
 
-tid = repo.create(ApiTokenCreate(workspace_id=1, label="ci"))   # uuid.UUID
-repo.get(tid)                                                   # ApiTokenDTO | None
+tid = repo.create_sync(ApiTokenCreate(workspace_id=1, label="ci"))   # uuid.UUID
+repo.get_sync(tid)                                                   # ApiTokenDTO | None
 ```
 
 !!! note "Why the type is declared and not inferred"
@@ -161,11 +162,31 @@ repo.get(tid)                                                   # ApiTokenDTO | 
 ### The slots are positional
 
 Type parameters cannot be passed by name, so to reach `PKT` you fill the ones
-before it. If a CRUD repository has real `Create`/`Update` payloads, declare
-them, that is the honest signature anyway:
+before it. `SessionT` follows `PKT` when the repository is asynchronous. If a
+CRUD repository has real `Create`/`Update` payloads, declare them, that is the
+honest signature anyway:
 
 ```python
 Repository[ApiToken, ApiTokenDTO, ApiTokenCreate, ApiTokenUpdate, uuid.UUID]
+```
+
+For the async version, add `AsyncSession` in the final slot:
+
+```python
+from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class AsyncApiTokenRepository(
+    Repository[
+        ApiToken,
+        ApiTokenDTO,
+        ApiTokenCreate,
+        ApiTokenUpdate,
+        uuid.UUID,
+        AsyncSession,
+    ]
+):
+    pk_column = "token_id"
 ```
 
 Padding the payload slots with `object` only makes sense when you genuinely
@@ -223,8 +244,8 @@ model on first use, so a column from the wrong model (or a bad name) raises
 prefer, they resolve to the same column. Both feed every id-based method:
 
 ```python
-repo.get("a1b2c3")     # WHERE url_hash = 'a1b2c3'
-repo.exists("a1b2c3")  # same column
+repo.get_sync("a1b2c3")     # WHERE url_hash = 'a1b2c3'
+repo.exists_sync("a1b2c3")  # same column
 ```
 
 This is the case for tables keyed by a natural identifier, a hash, a slug, an
@@ -237,10 +258,10 @@ ordinary attribute, so you can filter on it through the normal channels when you
 want a query rather than a single fetch:
 
 ```python
-repo.get("a1b2c3")     # one PageDTO | None, keyed lookup
+repo.get_sync("a1b2c3")     # one PageDTO | None, keyed lookup
 
 hashes = ["a1b2c3", "d4e5f6", "789abc"]
-repo.list(extra_filters=[Page.url_hash.in_(hashes)])   # list[PageDTO]
+repo.list_sync(extra_filters=[Page.url_hash.in_(hashes)])   # list[PageDTO]
 ```
 
 That returns a list, where `get` returns one. Reach for whichever matches what
@@ -275,14 +296,18 @@ class MembershipDTO:
 
 class MembershipRepository(Repository[Membership, MembershipDTO]):
 
-    def get(self, workspace_id: int, member_id: int) -> MembershipDTO | None:
+    def get_by_key_sync(self, workspace_id: int, member_id: int) -> MembershipDTO | None:
         model = self.session.scalars(
             select(Membership)
             .where(Membership.workspace_id == workspace_id)
             .where(Membership.member_id == member_id)
         ).first()
-        return self._hydrate(model) if model is not None else None
+        return self._hydrate_one_sync(model) if model is not None else None
 ```
 
-The read and filter machinery, `list`, `first`, `count`, `extra_filters`,
-projection, is indifferent to how many columns make up the key.
+Do not name this method `get`, which is the awaited single-key API. The async
+version follows the same query shape, awaits `self.session.execute(...)`, and
+finishes with `await self._hydrate_one_async(model)`.
+
+The read and filter machinery, `list`, `first`, `count`, `extra_filters`, and
+projection is indifferent to how many columns make up the key.

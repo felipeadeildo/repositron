@@ -31,14 +31,14 @@ if TYPE_CHECKING:
     def _checks(session: Session) -> None:
         user_repo = UserRepo(session)
         # DTO and the default int key flow through to the read methods.
-        assert_type(user_repo.get(1), UserDTO | None)
-        assert_type(user_repo.list(), list[UserDTO])
+        assert_type(user_repo.get_sync(1), UserDTO | None)
+        assert_type(user_repo.list_sync(), list[UserDTO])
 
         # str-keyed repo: PKT=str was declared, so get/exists take str.
-        assert_type(AccountReadRepo(session).get("abc"), AccountDTO | None)
+        assert_type(AccountReadRepo(session).get_sync("abc"), AccountDTO | None)
 
         # PKT in the 5th slot: create() returns it.
-        assert_type(UuidRepo(session).create(_UuidCreate(name="x")), uuid.UUID)
+        assert_type(UuidRepo(session).create_sync(_UuidCreate(name="x")), uuid.UUID)
 
         # repo[DTO] projection keeps the model and PKT, swaps the DTO.
         assert_type(

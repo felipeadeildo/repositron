@@ -37,9 +37,9 @@ def test_unparameterized_repo_raises_type_error(session: Session):
 def test_custom_pk_column_used(session: Session, seed_accounts: list[Account]):
     repo = AccountRepo(session)
     aid = seed_accounts[0].account_id
-    assert repo.get(aid) is not None  # keyed by account_id, not id
-    assert repo.exists(aid) is True
-    assert repo.exists("missing") is False
+    assert repo.get_sync(aid) is not None  # keyed by account_id, not id
+    assert repo.exists_sync(aid) is True
+    assert repo.exists_sync("missing") is False
 
 
 def test_create_reads_pk_back_with_attribute_column(session: Session):
@@ -54,9 +54,9 @@ def test_create_reads_pk_back_with_attribute_column(session: Session):
         account_id: str
         name: str
 
-    new_id = repo.create(AccountCreate(account_id="abc-123", name="Initech"))
+    new_id = repo.create_sync(AccountCreate(account_id="abc-123", name="Initech"))
     assert new_id == "abc-123"
-    assert repo.get("abc-123") is not None
+    assert repo.get_sync("abc-123") is not None
 
 
 def test_bad_pk_column_raises(session: Session):
@@ -64,7 +64,7 @@ def test_bad_pk_column_raises(session: Session):
         pk_column = "nope"
 
     with pytest.raises(AttributeError, match="nope"):
-        WrongPK(session).get(1)
+        WrongPK(session).get_sync(1)
 
 
 def test_pk_column_foreign_attribute_raises(session: Session):
@@ -74,7 +74,7 @@ def test_pk_column_foreign_attribute_raises(session: Session):
         pk_column = Account.account_id  # Account's column, not User's
 
     with pytest.raises(AttributeError, match="account_id"):
-        CrossRepo(session).get("x")
+        CrossRepo(session).get_sync("x")
 
 
 def test_empty_dto_projection_raises(session: Session, seed_users: list[User]):
@@ -85,7 +85,7 @@ def test_empty_dto_projection_raises(session: Session, seed_users: list[User]):
         pass
 
     with pytest.raises(ValueError, match="no fields"):
-        UserRepo(session)[Empty].list(order_by=User.id)
+        UserRepo(session)[Empty].list_sync(order_by=User.id)
 
 
 def test_dto_field_maps_to_no_column_raises(session: Session, seed_users: list[User]):
@@ -96,7 +96,7 @@ def test_dto_field_maps_to_no_column_raises(session: Session, seed_users: list[U
         ghost: int
 
     with pytest.raises(AttributeError, match="maps to no column"):
-        UserRepo(session)[Bogus].list(order_by=User.id)
+        UserRepo(session)[Bogus].list_sync(order_by=User.id)
 
 
 def test_unset_singleton_identity():

@@ -13,6 +13,10 @@ that batch-insert, queries that join across tables.
 Read them in any order. Each opens with the problem it solves, so you can tell
 at a glance whether it is the one you need right now.
 
+Unless a guide says otherwise, its code uses a synchronous `Session` and the
+`*_sync` methods. The [async and sync guide](async.md) shows the awaited form,
+session lifetime, and the rules that differ under `AsyncSession`.
+
 <div class="grid cards" markdown>
 
 -   :material-tune:{ .lg .middle } __[Configuration](configuration.md)__
@@ -21,6 +25,12 @@ at a glance whether it is the one you need right now.
 
     Type parameters, `field_mapping`, `pk_column`, and where behavior plugs in.
     Start here to understand how the base is customized.
+
+-   :material-sync:{ .lg .middle } __[Async and sync](async.md)__
+
+    ---
+
+    One repository base for FastAPI's `AsyncSession` and a worker's `Session`.
 
 -   :material-filter-variant:{ .lg .middle } __[Filtering](filtering.md)__
 

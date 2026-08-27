@@ -20,7 +20,7 @@ def test_before_create_mutates_model(session: Session):
         def stamp(self, model, payload):
             model.email = f"{model.name}@hook.test"
 
-    uid = Repo(session).create(UserCreate(name="Ada"))
+    uid = Repo(session).create_sync(UserCreate(name="Ada"))
     row = session.get(User, uid)
     assert row is not None and row.email == "Ada@hook.test"
 
@@ -33,7 +33,7 @@ def test_after_create_sees_pk(session: Session):
         def capture(self, model):
             seen["id"] = model.id  # populated only after flush
 
-    uid = Repo(session).create(UserCreate(name="Ada"))
+    uid = Repo(session).create_sync(UserCreate(name="Ada"))
     assert seen["id"] == uid
 
 
@@ -58,9 +58,9 @@ def test_update_and_delete_hooks_fire(session: Session):
             events.append("d_after")
 
     repo = Repo(session)
-    uid = repo.create(UserCreate(name="Ada"))
-    repo.update(uid, UserUpdate(name="Ada L."))
-    repo.delete(uid)
+    uid = repo.create_sync(UserCreate(name="Ada"))
+    repo.update_sync(uid, UserUpdate(name="Ada L."))
+    repo.delete_sync(uid)
     assert events == ["u_before", "u_after", "d_before", "d_after"]
 
 
@@ -74,9 +74,9 @@ def test_hydrate_after_enriches_dto(session: Session):
     user = User(name="Ada")
     session.add(user)
     session.flush()
-    got = repo.get(user.id)
+    got = repo.get_sync(user.id)
     assert got is not None and got.tag == f"u{user.id}"
-    assert repo.list()[0].tag == f"u{user.id}"
+    assert repo.list_sync()[0].tag == f"u{user.id}"
 
 
 def test_projection_skips_hydrate_hooks(session: Session, seed_users: list[User]):
@@ -87,7 +87,7 @@ def test_projection_skips_hydrate_hooks(session: Session, seed_users: list[User]
         def tag(self, model, dto):
             return replace(dto, tag="x")
 
-    rows = Repo(session)[UserNarrow].list(order_by=User.id)
+    rows = Repo(session)[UserNarrow].list_sync(order_by=User.id)
     assert all(isinstance(r, UserNarrow) for r in rows)  # built, no hook crash
 
 
@@ -104,7 +104,7 @@ def test_hooks_compose_across_mixins_in_order(session: Session):
         def own_stamp(self, model, payload):
             order.append("own")
 
-    Repo(session).create(UserCreate(name="Ada"))
+    Repo(session).create_sync(UserCreate(name="Ada"))
     assert order == ["mixin", "own"]  # base-to-subclass
 
 
@@ -118,8 +118,8 @@ def test_stacked_on_runs_for_each_event(session: Session):
             fired.append(model.id)
 
     repo = Repo(session)
-    uid = repo.create(UserCreate(name="Ada"))
-    repo.update(uid, UserUpdate(name="Ada L."))
+    uid = repo.create_sync(UserCreate(name="Ada"))
+    repo.update_sync(uid, UserUpdate(name="Ada L."))
     assert fired == [uid, uid]
 
 
@@ -133,8 +133,8 @@ def test_build_hook_constructs_non_dto_result(session: Session):
     user = User(name="Ada")
     session.add(user)
     session.flush()
-    assert repo.get(user.id) == "<Ada>"
-    assert repo.list() == ["<Ada>"]
+    assert repo.get_sync(user.id) == "<Ada>"
+    assert repo.list_sync() == ["<Ada>"]
 
 
 def test_build_hook_overrides_default(session: Session):
@@ -146,7 +146,7 @@ def test_build_hook_overrides_default(session: Session):
     user = User(name="Ada")
     session.add(user)
     session.flush()
-    got = Repo(session).get(user.id)
+    got = Repo(session).get_sync(user.id)
     assert got == UserTagged(id=user.id, name="forced", tag="b")
 
 
@@ -164,7 +164,7 @@ def test_build_then_after_compose(session: Session):
     user = User(name="Ada")
     session.add(user)
     session.flush()
-    got = Repo(session).get(user.id)
+    got = Repo(session).get_sync(user.id)
     assert got == UserTagged(id=user.id, name="Ada", tag=f"t{user.id}")
 
 
@@ -177,12 +177,12 @@ def test_hydrate_override_still_wins_as_build(session: Session):
     user = User(name="Ada")
     session.add(user)
     session.flush()
-    assert Repo(session).get(user.id) == "!Ada"
+    assert Repo(session).get_sync(user.id) == "!Ada"
 
 
 def test_unknown_hook_raises_at_class_definition():
     with pytest.raises(TypeError, match="unknown hook"):
 
         class Repo(Repository[User, User, UserCreate, UserUpdate]):
-            @on("create", mode="during")  # type: ignore[ty:invalid-argument-type]
+            @on("create", mode="during")  # ty: ignore[invalid-argument-type]
             def bad(self, model, payload): ...

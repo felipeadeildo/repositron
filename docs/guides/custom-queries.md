@@ -92,13 +92,16 @@ to build on.
 A method that does not fit `get` / `list` is just a method. You have the session,
 the model, and the full SQLAlchemy API:
 
+The examples in this guide use a synchronous `Session`. Their repository calls
+therefore use `_sync`; see [async and sync](async.md) for the awaited form.
+
 ```python
 from sqlalchemy import func, select
 
 
 class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
     def open_in_workspace(self, workspace_id: int) -> list[TaskDTO]:
-        return self.list(status="open", workspace_id=workspace_id)
+        return self.list_sync(status="open", workspace_id=workspace_id)
 
     def status_counts(self, workspace_id: int) -> dict[str, int]:
         rows = self.session.execute(
@@ -109,7 +112,7 @@ class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
         return dict(rows)
 ```
 
-Note the first method reuses `self.list` instead of reaching for the session.
+Note the first method reuses `self.list_sync` instead of reaching for the session.
 Build on the inherited methods where they fit; drop to raw SQLAlchemy only where
 they do not. A plain bulk update or delete is one of the cases that *does* fit,
 [`update_where` / `delete_where`](bulk.md#updating-and-deleting-in-place) cover it
@@ -134,7 +137,7 @@ class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
         )
 
 
-repo.list(extra_filters=[repo.search("deploy")], status="open")
+repo.list_sync(extra_filters=[repo.search("deploy")], status="open")
 ```
 
 Callers express intent ("search for deploy") and the column logic lives in one
@@ -192,14 +195,13 @@ reads better: the override for a longer construction like the one above, the hoo
 for a one-liner.
 
 !!! warning "Hydrating from your own method"
-    `get` / `first` / `list` run hydration through `_hydrate_one`, which applies
-    the build hook *and* the [`hydrate` after-hooks](hooks.md#enriching-the-dto).
-    When a custom method ([a `@writes`](#writes) that returns DTOs, say) needs to
-    hydrate a row itself, call **`self._hydrate_one(model)`**, not
-    `self._hydrate(model)`. `_hydrate` is the *default* build only; if your build
-    lives in a separate `@on("hydrate", mode="build")` method, calling `_hydrate`
-    directly skips it and silently runs the automatic conversion. `_hydrate_one`
-    always routes through whatever build and after-hooks are registered.
+    Built-in reads hydrate through `_hydrate_one_sync()` or `_hydrate_one_async()`.
+    Both apply the build hook and the [`hydrate` after-hooks](hooks.md#enriching-the-dto).
+    When a custom method needs to hydrate a row itself, call
+    **`self._hydrate_one_sync(model)`** in synchronous code or
+    **`await self._hydrate_one_async(model)`** in asynchronous code, not
+    `self._hydrate(model)`. `_hydrate` is the default build only. Calling it
+    directly skips a separately registered build hook and all after-hooks.
 
 ## Transactions on custom writes { #writes }
 
@@ -257,9 +259,9 @@ commit/rollback:
         return task.id
 ```
 
-To return DTOs from a custom write instead of an id, hydrate the saved rows with
-`self._hydrate_one`, the same entry point `get` and `list` use, so a custom build
-or `hydrate` after-hooks apply:
+To return DTOs from a synchronous custom write instead of an id, hydrate saved
+rows with `self._hydrate_one_sync`, so a custom build or `hydrate` after-hooks
+apply:
 
 ```python
     @writes
@@ -269,7 +271,29 @@ or `hydrate` after-hooks apply:
         self.session.flush()
         for title in subtasks:
             self.session.add(Subtask(task_id=task.id, title=title))
-        return self._hydrate_one(task)   # not self._hydrate, see Custom hydration above
+        return self._hydrate_one_sync(task)  # not self._hydrate, see Custom hydration above
+```
+
+For an async repository, make the custom write `async def`, await SQLAlchemy
+I/O, and use `_hydrate_one_async`:
+
+```python
+from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class AsyncTaskRepository(
+    Repository[Task, TaskDTO, TaskCreate, TaskUpdate, int, AsyncSession]
+):
+    @writes
+    async def create_with_subtasks(
+        self, payload: TaskCreate, subtasks: list[str]
+    ) -> TaskDTO:
+        task = Task(workspace_id=payload.workspace_id, title=payload.title)
+        self.session.add(task)
+        await self.session.flush()
+        for title in subtasks:
+            self.session.add(Subtask(task_id=task.id, title=title))
+        return await self._hydrate_one_async(task)
 ```
 
 Without `@writes`, a custom write should still `flush`, never `commit`, the same

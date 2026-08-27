@@ -81,21 +81,26 @@ That is the whole repository. `get` / `first` / `list` / `list_paginated` /
 against `TaskDTO`:
 
 ```python
-repo = TaskRepository(session)
+repo = TaskRepository(session)  # a synchronous SQLAlchemy Session
 
-repo.get(1)                                              # -> TaskDTO | None
-repo.list(workspace_id=42, status="open", order_by=Task.created_at.desc())  # -> list[TaskDTO]
-repo.list_paginated(0, 20, order_by=Task.created_at.desc())  # -> PaginatedResult[TaskDTO]
-repo.create(TaskCreate(workspace_id=42, title="Ship the docs"))  # -> int (new id)
-repo.update(1, TaskUpdate(status="done"))               # only status; title untouched
+repo.get_sync(1)                                         # -> TaskDTO | None
+repo.list_sync(workspace_id=42, status="open", order_by=Task.created_at.desc())
+repo.list_paginated_sync(0, 20, order_by=Task.created_at.desc())
+repo.create_sync(TaskCreate(workspace_id=42, title="Ship the docs"))  # -> int (new id)
+repo.update_sync(1, TaskUpdate(status="done"))          # only status; title untouched
 ```
+
+For FastAPI or another async application, bind the same base to `AsyncSession`
+and await the unsuffixed methods: `await repo.get(id)`, `await repo.list(...)`,
+and `await repo.create(payload)`. The full [async and sync guide](https://repositron.fa.dev.br/guides/async/)
+shows both session types, hooks, custom writes, and the migration mapping.
 
 ## Why repositron
 
 **It cuts the layer you keep rewriting.** One generic base replaces the
 per-table CRUD class, and every method is typed off the generic parameters, so
-your editor knows `repo.list()` is `list[TaskDTO]` and `repo.get(id)` is checked
-against the key type you declared (`int`, `str`, `uuid.UUID`).
+your editor knows `await repo.list()` returns `list[TaskDTO]` and `repo.get(id)`
+is checked against the key type you declared (`int`, `str`, `uuid.UUID`).
 
 **Two ways to filter, in one call.** Equality is keyed by attribute name,
 anything else is a plain SQLAlchemy expression, and they combine. A `None` value
@@ -103,7 +108,7 @@ means `IS NULL`; `UNSET` skips the filter, so optional query params pass straigh
 through without branching.
 
 ```python
-repo.list(workspace_id=42, extra_filters=[Task.archived_at.is_(None)], order_by=Task.id)
+repo.list_sync(workspace_id=42, extra_filters=[Task.archived_at.is_(None)], order_by=Task.id)
 # WHERE workspace_id = 42 AND archived_at IS NULL ORDER BY id  (open, non-archived)
 ```
 
@@ -123,7 +128,7 @@ class TaskCard:
     title: str
     status: str
 
-repo[TaskCard].list(workspace_id=42, status="open")
+repo[TaskCard].list_sync(workspace_id=42, status="open")
 # SELECT tasks.id, tasks.title, tasks.status FROM tasks
 #   WHERE workspace_id = 42 AND status = 'open'
 #   -> list[TaskCard]   (only those three columns ever leave the database)

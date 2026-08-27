@@ -62,7 +62,7 @@ is what you need to compute how many pages there are, so it comes back in the
 same call rather than forcing a second one.
 
 ```python
-page = repo.list_paginated(offset=0, limit=20, order_by=Task.created_at.desc())
+page = repo.list_paginated_sync(offset=0, limit=20, order_by=Task.created_at.desc())
 
 page.items   # list[TaskDTO]  -> this page
 page.total   # int            -> all matching rows, ignoring offset/limit
@@ -75,7 +75,7 @@ open tasks in one workspace, newest first:
 ```python
 offset, limit = 0, 20
 
-page = repo.list_paginated(
+page = repo.list_paginated_sync(
     offset=offset,
     limit=limit,
     workspace_id=42,
@@ -95,7 +95,7 @@ from repositron import PaginatedResult
 
 
 def list_open_tasks(self, workspace_id: int, offset: int, limit: int):
-    result: PaginatedResult[TaskDTO] = self.repo.list_paginated(
+    result: PaginatedResult[TaskDTO] = self.repo.list_paginated_sync(
         offset=offset,
         limit=limit,
         workspace_id=workspace_id,
@@ -134,7 +134,7 @@ def list_tasks(
     page: int = 1,
     size: int = 20,
 ):
-    result = repo.list_paginated(
+    result = repo.list_paginated_sync(
         offset=(page - 1) * size,
         limit=size,
         workspace_id=workspace_id,
@@ -153,8 +153,8 @@ Here is the part that is not optional. `list_paginated` will raise a `ValueError
 if you do not give it an `order_by`:
 
 ```python
-repo.list_paginated(0, 20)                              # ValueError
-repo.list_paginated(0, 20, order_by=Task.created_at)    # fine
+repo.list_paginated_sync(0, 20)                              # ValueError
+repo.list_paginated_sync(0, 20, order_by=Task.created_at)    # fine
 ```
 
 This is deliberate. A database is free to return rows in any order when you do
@@ -169,7 +169,7 @@ session. Pick a stable order, ideally one that ends in a unique column like the
 primary key, and the problem cannot occur:
 
 ```python
-repo.list_paginated(0, 20, order_by=[Task.created_at.desc(), Task.id])
+repo.list_paginated_sync(0, 20, order_by=[Task.created_at.desc(), Task.id])
 ```
 
 ## Pagination plays well with projection
@@ -185,7 +185,7 @@ class TaskCard:
     status: str
 
 
-page = repo[TaskCard].list_paginated(
+page = repo[TaskCard].list_paginated_sync(
     0, 20, workspace_id=42, status="open", order_by=repo.ORDER
 )
 # SELECT only TaskCard's columns, paginated -> PaginatedResult[TaskCard]

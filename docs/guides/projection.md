@@ -68,9 +68,9 @@ class TaskCard:
     title: str
     status: str
 
-repo[TaskCard].list(workspace_id=42)   # SELECT id, title, status -> list[TaskCard]
-repo[TaskCard].first(id=5)             # TaskCard | None
-repo[TaskCard].get(5)                  # TaskCard | None
+repo[TaskCard].list_sync(workspace_id=42)   # SELECT id, title, status -> list[TaskCard]
+repo[TaskCard].first_sync(id=5)             # TaskCard | None
+repo[TaskCard].get_sync(5)                  # TaskCard | None
 ```
 
 `get`, `first`, `list`, and `list_paginated` all project when a shape is bound.
@@ -82,13 +82,14 @@ rows you then have to trim.
 ## It does not disturb the repository you injected
 
 `repo[TaskCard]` returns a lightweight clone bound to that shape for the duration
-of the call. The repository you constructed and injected is untouched, so this is
-safe to do anywhere, including in code that shares one repository across requests:
+of the call. The original repository keeps its default DTO. This does not make
+the wrapped session safe to share. Use both the repository and its projection
+clone only within the request, job, or task that owns that session:
 
 ```python
-repo.list()                  # list[TaskDTO]   (the repository's default shape)
-repo[TaskCard].list()        # list[TaskCard]  (just for this call)
-repo.list()                  # list[TaskDTO]   (unchanged; still the default)
+repo.list_sync()                  # list[TaskDTO]   (the repository's default shape)
+repo[TaskCard].list_sync()        # list[TaskCard]  (just for this call)
+repo.list_sync()                  # list[TaskDTO]   (unchanged; still the default)
 ```
 
 Because the clone is cheap and stateless, reaching for a projection is never a
@@ -107,7 +108,7 @@ class TaskCard:
     title: str       # field_mapping resolves this to the headline column
     status: str
 
-repo[TaskCard].list()   # SELECT id, headline, status
+repo[TaskCard].list_sync()   # SELECT id, headline, status
 ```
 
 ## Where it pays off
@@ -123,7 +124,7 @@ Two patterns recur:
         id: int
         title: str
 
-    titles = {t.id: t.title for t in repo[TaskIdTitle].list(workspace_id=42)}
+    titles = {t.id: t.title for t in repo[TaskIdTitle].list_sync(workspace_id=42)}
     ```
 
 - **Fan-out.** When a background job needs each task's id and assignee and nothing
@@ -136,7 +137,7 @@ Two patterns recur:
         id: int
         assignee_id: int | None
 
-    for task in repo[TaskIdAssignee].list(status="open"):
+    for task in repo[TaskIdAssignee].list_sync(status="open"):
         if task.assignee_id is not None:
             notify(task.assignee_id)   # your job fn
     ```

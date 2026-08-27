@@ -7,6 +7,12 @@ icon: lucide/book-marked
 Everything the package exposes, in one place. For task-oriented walkthroughs,
 start with the [guides](guides/index.md).
 
+!!! warning "Migrating from 0.6"
+
+    This release moves the old synchronous methods to the `_sync` spelling.
+    A `Session` call such as `repo.get(id)` becomes `repo.get_sync(id)`. The
+    unsuffixed methods are awaited and require `AsyncSession`.
+
 ## Imports
 
 ```python
@@ -24,17 +30,19 @@ from repositron import (
 ## Type parameters
 
 ```python
-Repository[Model, DTO = Model, Create = object, Update = object, PK = int]
-ReadOnlyRepository[Model, DTO = Model, PK = int]
+Repository[Model, DTO = Model, Create = object, Update = object, PK = int, SessionT = Session]
+ReadOnlyRepository[Model, DTO = Model, PK = int, SessionT = Session]
 ```
 
 `Model` is required. `DTO` defaults to the model itself (reads return the model,
 unhydrated). `Create` and `Update` are the payload dataclasses your writes
-accept. `PK` is the primary-key type, defaulting to `int`; declare it (last,
-after the others) when your key is a `str` or `uuid`. So `Repository[Workspace]`
+accept. `PK` is the primary-key type, defaulting to `int`; it comes before the
+final `SessionT` parameter when your key is a `str` or `uuid`. So `Repository[Workspace]`
 is a valid read/write repository returning `Workspace` with an `int` key, and you
-add the other parameters only as you need them. See
-[primary keys](guides/primary-keys.md).
+add the other parameters only as you need them. `SessionT` is either
+`sqlalchemy.orm.Session`, `sqlalchemy.ext.asyncio.AsyncSession`, or SQLAlchemy's
+`async_scoped_session`. See
+[primary keys](guides/primary-keys.md) and [async and sync](guides/async.md).
 
 ## Class attributes
 
@@ -55,23 +63,27 @@ class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
 
 Available on both `ReadOnlyRepository` and `Repository`.
 
-`get(id) -> DTO | None`
+The regular method names are asynchronous and require `AsyncSession`: await
+`get`, `first`, `list`, `list_paginated`, `count`, and `exists`. Their direct
+`Session` equivalents append `_sync`.
+
+`get(id) -> DTO | None` / `get_sync(id) -> DTO | None`
 :   Fetch one row by primary key, hydrated to the DTO. `None` if absent.
 
-`first(*, extra_filters=None, order_by=None, **filters) -> DTO | None`
+`first(...) -> DTO | None` / `first_sync(...) -> DTO | None`
 :   The first row matching the filters, or `None`. See [filtering](guides/filtering.md).
 
-`list(*, extra_filters=None, order_by=None, **filters) -> list[DTO]`
+`list(...) -> list[DTO]` / `list_sync(...) -> list[DTO]`
 :   All rows matching the filters, each hydrated to the DTO.
 
-`list_paginated(offset, limit=20, *, extra_filters=None, order_by, **filters) -> PaginatedResult[DTO]`
+`list_paginated(...) -> PaginatedResult[DTO]` / `list_paginated_sync(...) -> PaginatedResult[DTO]`
 :   A page plus the unpaginated total. `order_by` is **required**; omitting it
     raises `ValueError`. See [pagination](guides/pagination.md).
 
-`count(*, extra_filters=None, **filters) -> int`
+`count(...) -> int` / `count_sync(...) -> int`
 :   Count of rows matching the filters.
 
-`exists(id) -> bool`
+`exists(id) -> bool` / `exists_sync(id) -> bool`
 :   Whether a row with this primary key exists.
 
 `repo[Shape]`
@@ -82,7 +94,8 @@ Available on both `ReadOnlyRepository` and `Repository`.
 
 `Repository(session, *, autocommit=False, rollback_on_error=True)`
 `ReadOnlyRepository(session, *, autocommit=False, rollback_on_error=True)`
-:   `session` is the caller-owned SQLAlchemy `Session`. With `autocommit=True`,
+:   `session` is the caller-owned SQLAlchemy `Session`, `AsyncSession`, or
+    `async_scoped_session`. With `autocommit=True`,
     every write commits after its flush; the default flushes only and leaves the
     transaction to you. `rollback_on_error` (`True` by default) rolls the session
     back before re-raising when a flush or commit fails; set it to `False` to
@@ -92,7 +105,10 @@ Available on both `ReadOnlyRepository` and `Repository`.
 
 ## Write methods
 
-Available on `Repository` only. Each takes `commit: bool | None = None`: `None`
+Available on `Repository` only. The regular `create`, `update`, `delete`,
+`bulk_create`, `update_where`, and `delete_where` methods require and are
+awaited with `AsyncSession`; their `*_sync` counterparts require `Session`.
+Each takes `commit: bool | None = None`: `None`
 follows the instance's `autocommit`, `True`/`False` overrides it for that one
 call. On a commit failure the session is rolled back and the error re-raised.
 
@@ -108,6 +124,19 @@ call. On a commit failure the session is rolled back and the error re-raised.
 
 `delete(id, *, commit=None) -> bool`
 :   Delete by primary key and flush. `False` if no row has that key.
+
+`bulk_create(payloads, *, hooks=False, commit=None) -> list[PK]`
+:   Add several dataclass payloads and flush once. Returns their keys in input
+    order. It skips create hooks unless `hooks=True`; SQLAlchemy decides whether
+    the inserts can be batched for the active dialect.
+
+`update_where(*expressions, commit=None, **values) -> int`
+:   Run one guarded set-based `UPDATE` and return its affected-row count. At
+    least one positional expression is required.
+
+`delete_where(*expressions, commit=None, **filters) -> int`
+:   Run one guarded set-based `DELETE` and return its affected-row count. It
+    requires a positional expression or an equality filter.
 
 ## Lifecycle hooks
 

@@ -73,8 +73,8 @@ The common case is matching a column to a value. Pass it as a keyword argument,
 keyed by the model's attribute name:
 
 ```python
-repo.list(status="open")
-repo.list(status="open", workspace_id=42)
+repo.list_sync(status="open")
+repo.list_sync(status="open", workspace_id=42)
 ```
 
 Each keyword becomes a `column == value` and they join with `AND`. If you name a
@@ -92,7 +92,7 @@ import datetime
 
 cutoff = datetime.datetime.now() - datetime.timedelta(days=7)
 
-repo.list(
+repo.list_sync(
     workspace_id=42,
     extra_filters=[
         Task.created_at >= cutoff,
@@ -111,10 +111,10 @@ including `OR` and `IN` over a list you built at runtime:
 from sqlalchemy import or_
 
 wanted_ids = [101, 102, 103]
-repo.list(extra_filters=[Task.id.in_(wanted_ids)])
+repo.list_sync(extra_filters=[Task.id.in_(wanted_ids)])
 
 q = "%deploy%"
-repo.list(extra_filters=[or_(Task.title.ilike(q), Task.description.ilike(q))])
+repo.list_sync(extra_filters=[or_(Task.title.ilike(q), Task.description.ilike(q))])
 ```
 
 That last pattern, a free-text search across a couple of columns, is common
@@ -133,7 +133,7 @@ A keyword filter understands two values beyond the obvious:
 `None` filtering by `IS NULL` is what you would hope for:
 
 ```python
-repo.list(assignee_id=None)   # WHERE assignee_id IS NULL  (unassigned tasks)
+repo.list_sync(assignee_id=None)   # WHERE assignee_id IS NULL  (unassigned tasks)
 ```
 
 `UNSET` is the quietly useful one. It means "pretend I did not pass this filter
@@ -161,7 +161,7 @@ def list_tasks(
     filters = {"status": status}
     if assignee_id is not None:
         filters["assignee_id"] = assignee_id
-    return repo.list(workspace_id=workspace_id, **filters)
+    return repo.list_sync(workspace_id=workspace_id, **filters)
 ```
 
 No ladder of `if param is not None`. The sentinel does the deciding.
@@ -172,8 +172,8 @@ No ladder of `if param is not None`. The sentinel does the deciding.
 list of them:
 
 ```python
-repo.list(order_by=Task.created_at.desc())
-repo.list(order_by=[Task.created_at.desc(), Task.id])
+repo.list_sync(order_by=Task.created_at.desc())
+repo.list_sync(order_by=[Task.created_at.desc(), Task.id])
 ```
 
 A tidy habit from real codebases: when a table has one canonical sort, declare it
@@ -183,7 +183,7 @@ once as a class attribute and reuse it everywhere.
 class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
     ORDER = [Task.created_at.desc(), Task.id]
 
-repo.list(order_by=repo.ORDER)
+repo.list_sync(order_by=repo.ORDER)
 ```
 
 Ordering becomes mandatory the moment you paginate. That is the subject of the
