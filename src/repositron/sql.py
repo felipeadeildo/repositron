@@ -5,7 +5,7 @@ import inspect as pyinspect
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import fields, is_dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, ClassVar, cast, get_args, get_origin
+from typing import ClassVar, cast, get_args, get_origin
 
 from sqlalchemy import CursorResult, Delete, Select, Update, delete, func, inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_scoped_session
@@ -21,9 +21,6 @@ from repositron.base import (
 )
 from repositron.hooks import HookEvent, HookMode, HookRegistry, collect_hooks, on
 from repositron.sentinel import UnsetType
-
-if TYPE_CHECKING:
-    from _typeshed import DataclassInstance
 
 _list = list
 
@@ -96,11 +93,15 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int, SessionT: RepositoryS
 
     def _hooks_for(self, event: HookEvent, mode: HookMode) -> Iterator[Callable[..., object]]:
         for name in self._hooks.get((event, mode), ()):
-            yield cast("Callable[..., object]", getattr(self, name))
+            hook = getattr(self, name, None)
+            if not callable(hook):
+                raise TypeError(f"Hook {type(self).__name__}.{name} must be callable")
+            yield hook
 
     @staticmethod
     def _hook_name(hook: Callable[..., object]) -> str:
-        return cast("str", getattr(hook, "__qualname__", type(hook).__name__))
+        name = getattr(hook, "__qualname__", None)
+        return name if isinstance(name, str) else type(hook).__name__
 
     def _emit_sync(self, event: HookEvent, mode: HookMode, *args: object) -> None:
         for hook in self._hooks_for(event, mode):
@@ -193,7 +194,9 @@ class ReadOnlyRepository[ModelT, DTOT = ModelT, PKT = int, SessionT: RepositoryS
 
     def _project_columns(self, dto: type) -> _list[ColumnElement]:
         reverse = {v: k for k, v in self.field_mapping.items()}
-        names = [field.name for field in fields(cast("type[DataclassInstance]", dto))]
+        if not is_dataclass(dto):
+            raise TypeError(f"DTO {dto.__name__} must be a dataclass")
+        names = [field.name for field in fields(dto)]
         if not names:
             raise ValueError(f"DTO {dto.__name__} has no fields")
         columns: _list[ColumnElement] = []
@@ -548,9 +551,11 @@ class Repository[
     """CRUD repository with async methods and explicit ``*_sync`` counterparts."""
 
     def _model_from_payload(self, payload: CreateT) -> ModelT:
+        if not is_dataclass(payload):
+            raise TypeError("Create payload must be a dataclass instance")
         kwargs = {
             field.name: getattr(payload, field.name)
-            for field in fields(cast("DataclassInstance", payload))
+            for field in fields(payload)
             if hasattr(self.model_class, field.name)
             and not isinstance(getattr(payload, field.name), UnsetType)
         }
@@ -584,7 +589,7 @@ class Repository[
         session.add(model)
         await self._flush_async()
         await self._emit_async("create", "after", model)
-        pk = cast("PKT", getattr(model, self._pk_col.key))
+        pk = self._model_pk(model)
         await self._commit_async(commit)
         return pk
 
@@ -601,16 +606,21 @@ class Repository[
         session.add(model)
         self._flush_sync()
         self._emit_sync("create", "after", model)
-        pk = cast("PKT", getattr(model, self._pk_col.key))
+        pk = self._model_pk(model)
         self._commit_sync(commit)
         return pk
 
     @staticmethod
     def _apply_payload(model: ModelT, payload: UpdateT) -> None:
-        for field in fields(cast("DataclassInstance", payload)):
+        if not is_dataclass(payload):
+            raise TypeError("Update payload must be a dataclass instance")
+        for field in fields(payload):
             value = getattr(payload, field.name)
             if not isinstance(value, UnsetType) and hasattr(model, field.name):
                 setattr(model, field.name, value)
+
+    def _model_pk(self, model: ModelT) -> PKT:
+        return cast("PKT", getattr(model, self._pk_col.key))
 
     async def update[AsyncSessionT: AsyncRepositorySession](
         self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, AsyncSessionT]",
@@ -708,7 +718,7 @@ class Repository[
             for model in models:
                 await self._emit_async("create", "after", model)
         await self._commit_async(commit)
-        return [cast("PKT", getattr(model, self._pk_col.key)) for model in models]
+        return [self._model_pk(model) for model in models]
 
     def bulk_create_sync(
         self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, Session]",
@@ -729,7 +739,7 @@ class Repository[
             for model in models:
                 self._emit_sync("create", "after", model)
         self._commit_sync(commit)
-        return [cast("PKT", getattr(model, self._pk_col.key)) for model in models]
+        return [self._model_pk(model) for model in models]
 
     def _update_where_stmt(
         self, extra_filters: tuple[ColumnElement[bool], ...], values: dict[str, object]
@@ -738,7 +748,9 @@ class Repository[
             raise ValueError(
                 "update_where requires at least one filter (refusing a full-table update)"
             )
-        mapper = cast("Mapper[ModelT]", inspect(self.model_class))
+        mapper = inspect(self.model_class)
+        if not isinstance(mapper, Mapper):
+            raise TypeError(f"Could not inspect mapper for {self.model_class.__name__}")
         for key in values:
             if key not in mapper.columns:
                 raise ValueError(
@@ -761,7 +773,7 @@ class Repository[
         stmt = self._update_where_stmt(extra_filters, values)
         result = await self._run_async(lambda: self._async_session().execute(stmt))
         await self._commit_async(commit)
-        return cast("CursorResult[object]", result).rowcount or 0
+        return self._affected_row_count(result)
 
     def update_where_sync(
         self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, Session]",
@@ -773,7 +785,7 @@ class Repository[
         stmt = self._update_where_stmt(extra_filters, values)
         result = self._run_sync(lambda: self._sync_session().execute(stmt))
         self._commit_sync(commit)
-        return cast("CursorResult[object]", result).rowcount or 0
+        return self._affected_row_count(result)
 
     def _delete_where_stmt(
         self, extra_filters: tuple[ColumnElement[bool], ...], filters: dict[str, FilterValue]
@@ -788,6 +800,12 @@ class Repository[
             .execution_options(synchronize_session=False)
         )
 
+    @staticmethod
+    def _affected_row_count(result: object) -> int:
+        if not isinstance(result, CursorResult):
+            raise TypeError("Expected a cursor result from a write statement")
+        return result.rowcount or 0
+
     async def delete_where[AsyncSessionT: AsyncRepositorySession](
         self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, AsyncSessionT]",
         *extra_filters: ColumnElement[bool],
@@ -798,7 +816,7 @@ class Repository[
         stmt = self._delete_where_stmt(extra_filters, filters)
         result = await self._run_async(lambda: self._async_session().execute(stmt))
         await self._commit_async(commit)
-        return cast("CursorResult[object]", result).rowcount or 0
+        return self._affected_row_count(result)
 
     def delete_where_sync(
         self: "Repository[ModelT, DTOT, CreateT, UpdateT, PKT, Session]",
@@ -810,4 +828,4 @@ class Repository[
         stmt = self._delete_where_stmt(extra_filters, filters)
         result = self._run_sync(lambda: self._sync_session().execute(stmt))
         self._commit_sync(commit)
-        return cast("CursorResult[object]", result).rowcount or 0
+        return self._affected_row_count(result)
