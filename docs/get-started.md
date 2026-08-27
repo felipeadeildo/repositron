@@ -4,45 +4,45 @@ icon: lucide/rocket
 
 # Get started
 
-This page builds a working, fully typed synchronous repository around a
-caller-owned SQLAlchemy `Session`. It assumes your application already creates
-the engine and runs migrations. Read it once, start to finish. After that, the
-[guides](guides/index.md) cover each capability in depth. For `AsyncSession`,
-start with [async and sync](guides/async.md).
+This walkthrough builds a typed repository for an application using SQLAlchemy.
+It assumes the application already creates the database and runs migrations.
+Read it once from top to bottom, then use the [guides](guides/index.md) by
+capability.
 
 ## Install
 
-repositron runs on Python 3.13+ and SQLAlchemy 2.0.
+repositron runs on Python 3.13+ and SQLAlchemy 2.0. Install the asyncio extra
+for an async application; it includes SQLAlchemy's `asyncio` extra and its
+`greenlet` dependency.
 
 === "uv"
 
     ```bash
-    uv add repositron
+    uv add "repositron[asyncio]"
     ```
 
 === "pip"
 
     ```bash
-    pip install repositron
+    pip install "repositron[asyncio]"
     ```
 
-SQLAlchemy is the only runtime dependency. If your return shapes are
-dataclasses, that is the whole footprint. Nothing else comes along for the ride.
+Dataclass return shapes add no further dependency. Pydantic is optional when
+you already use it for API schemas.
 
 ## A model to work with
 
-Everything in these docs is built around one small domain: a task tracker, with
-`Task` rows that belong to a workspace. It is an ordinary SQLAlchemy model, with
-nothing repositron-specific in it, so if you already have models, point
-repositron at those instead.
+The examples use a small task tracker. It is an ordinary SQLAlchemy model; if
+you already have models, use those instead.
 
 ```python
 import datetime
 
+from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
-class Base(DeclarativeBase): ...
+class Base(AsyncAttrs, DeclarativeBase): ...
 
 
 class Task(Base):
@@ -52,7 +52,7 @@ class Task(Base):
     workspace_id: Mapped[int]
     title: Mapped[str]
     description: Mapped[str | None] = mapped_column(default=None)
-    status: Mapped[str] = mapped_column(default="open")     # open | in_progress | done
+    status: Mapped[str] = mapped_column(default="open")
     assignee_id: Mapped[int | None] = mapped_column(default=None)
     created_at: Mapped[datetime.datetime] = mapped_column(
         default=lambda: datetime.datetime.now(datetime.UTC)
@@ -60,35 +60,33 @@ class Task(Base):
     archived_at: Mapped[datetime.datetime | None] = mapped_column(default=None)
 ```
 
+`AsyncAttrs` is useful once a DTO or hook needs an unloaded relationship. The
+[async guide](guides/async.md#relationships-and-hydration) explains when to use
+it and when to prefer eager loading.
+
 ## Declare the shapes
 
-A repository is described by type parameters. Most synchronous repositories use
-the first four:
-
-```python
-Repository[Model, DTO, Create, Update]
-```
-
-`Model` is your SQLAlchemy class. `DTO` is what reads hand back. `Create` and
-`Update` are the dataclasses your writes accept. We will use all four so the
-example stays focused. The complete signature also has `PK` and `SessionT`:
+`Repository` is generic in the model, the shape reads return, the create and
+update payloads, the primary-key type, and the session type:
 
 ```python
 Repository[Model, DTO = Model, Create = object, Update = object, PK = int, SessionT = Session]
 ```
 
-`PK` is the fifth parameter and `SessionT` is the last. Leave both at their
-defaults for an integer-keyed synchronous repository. The [primary key guide](guides/primary-keys.md)
-covers other keys and the [async guide](guides/async.md) shows `AsyncSession`.
+Most applications supply the first four parameters and put `AsyncSession` in
+the final slot. It makes the awaited API visible to your editor and lets `ty`
+reject calls made with the wrong session mode.
 
 ```python
 from dataclasses import dataclass
 
-from repositron import UNSET, UnsetType
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from repositron import Repository, UNSET, UnsetType
 
 
 @dataclass(frozen=True, slots=True)
-class TaskDTO:                 # the shape reads return
+class TaskDTO:
     id: int
     title: str
     status: str
@@ -96,7 +94,7 @@ class TaskDTO:                 # the shape reads return
 
 
 @dataclass
-class TaskCreate:              # what create() accepts
+class TaskCreate:
     workspace_id: int
     title: str
     description: str | None | UnsetType = UNSET
@@ -104,63 +102,91 @@ class TaskCreate:              # what create() accepts
 
 
 @dataclass
-class TaskUpdate:              # what update() accepts
+class TaskUpdate:
     title: str | UnsetType = UNSET
     status: str | UnsetType = UNSET
-    assignee_id: int | None | UnsetType = UNSET   # None = unassign (SET NULL)
-```
-
-`TaskDTO` is deliberately narrower than the model, it carries what a list view
-needs, not every column. The `UNSET` defaults on the payloads are how a field
-gets *left alone* on a write; [updating rows](guides/updates.md) covers why that
-matters.
-
-Wire the three together by subclassing `Repository`:
-
-```python
-from repositron import Repository
+    assignee_id: int | None | UnsetType = UNSET
 
 
-class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
+class TaskRepository(
+    Repository[Task, TaskDTO, TaskCreate, TaskUpdate, int, AsyncSession]
+):
     pass
 ```
 
-That is the entire class. Everything below uses this `TaskRepository`. The
-[guides](guides/index.md) add the knobs, `field_mapping` for renamed columns, a
-non-`int` key, hooks, as you need them.
+`TaskDTO` is deliberately narrower than the model: it carries what a task view
+needs, not every column. `UNSET` means “leave this field alone”; `None` remains
+a value, so `TaskUpdate(assignee_id=None)` writes `NULL`.
 
-## Use it
+## Create a session per task
 
-Hand the repository a session and every method is already there, already typed:
+Build the engine and session factory during application startup. Create one
+`AsyncSession` per request, job, or concurrent task; an `AsyncSession` is
+mutable transaction state and cannot be shared between concurrent tasks.
 
 ```python
-repo = TaskRepository(session)
+from collections.abc import AsyncIterator
 
-repo.get_sync(1)                                  # TaskDTO | None
-repo.list_sync(workspace_id=42, status="open")    # list[TaskDTO]
-repo.count_sync(workspace_id=42)                  # int
-repo.exists_sync(1)                               # bool
-repo.create_sync(TaskCreate(workspace_id=42, title="Ship the docs"))  # int (new id)
-repo.update_sync(1, TaskUpdate(status="done"))    # True; title untouched
-repo.delete_sync(1)                               # bool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+
+engine = create_async_engine("postgresql+psycopg://user:password@host/database")
+sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def get_session() -> AsyncIterator[AsyncSession]:
+    async with sessions() as session:
+        yield session
+
+
+async def shutdown() -> None:
+    await engine.dispose()
 ```
 
-Hover any of those calls in your editor. `repo.list_sync()` is `list[TaskDTO]`, not
-`list[Any]`. The same object you return here is the object your web framework
-serializes, so there is no second schema to keep in step.
+`expire_on_commit=False` keeps already-loaded attributes usable after a commit.
+Always dispose an engine that leaves scope while the event loop is still alive.
 
-!!! note "The session stays yours"
-    repositron never opens or closes the session, and by default writes only
-    `flush`, leaving when to commit and roll back to your application. When you
-    do want a write committed, opt in with `Repository(session, autocommit=True)`
-    or per call with `repo.create_sync(payload, commit=True)`; see
-    [transactions](guides/updates.md#transactions). A repository wraps that
-    session, so its lifetime and concurrency rules are the session's rules.
-    Create or inject the repository within the request, job, or task that owns
-    the session. This boundary is one of the [design principles](reference.md#design-principles).
+## Use the repository
 
-## Where to go next
+Inject or create the repository inside the scope that owns the session. Its
+normal method names are coroutines:
 
-You now have a working repository. From here, the [Guides](guides/index.md) take
-each capability one at a time, filtering, updating, pagination, projection,
-return types, hooks, and the escape hatch for custom queries.
+```python
+async def work(session: AsyncSession) -> None:
+    repo = TaskRepository(session)
+
+    task = await repo.get(1)  # TaskDTO | None
+    tasks = await repo.list(workspace_id=42, status="open")  # list[TaskDTO]
+    total = await repo.count(workspace_id=42)
+    exists = await repo.exists(1)
+
+    task_id = await repo.create(TaskCreate(workspace_id=42, title="Ship the docs"))
+    updated = await repo.update(task_id, TaskUpdate(status="done"))
+    deleted = await repo.delete(task_id)
+```
+
+Writes flush by default and leave the transaction boundary to the caller. Use
+`async with sessions.begin()` when the application owns a unit of work, set
+`Repository(..., autocommit=True)`, or pass `commit=True` to one write. See
+[transactions](guides/updates.md#transactions) for the trade-offs.
+
+## The synchronous counterpart
+
+Synchronous code uses the same base with `Session` in the final generic slot
+and the explicit `*_sync` methods. This is useful for a conventional worker or
+script; it is not a bridge that runs async code for you.
+
+```python
+from sqlalchemy.orm import Session
+
+
+class SyncTaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate, int, Session]):
+    pass
+
+
+def archive(session: Session, task_id: int) -> bool:
+    return SyncTaskRepository(session).update_sync(task_id, TaskUpdate(status="archived"))
+```
+
+For lifecycle, relationship loading, scoped sessions, hooks, and the complete
+sync mapping, continue to [Sessions and execution](guides/async.md).

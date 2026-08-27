@@ -43,7 +43,9 @@ hand-written schema sitting between them, drifting out of sync.
 ```python
 from dataclasses import dataclass
 
-from repositron import Repository
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from repositron import ReadOnlyRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +56,7 @@ class TaskDTO:
     assignee_id: int | None
 
 
-class TaskRepository(Repository[Task, TaskDTO]): ...
+class TaskRepository(ReadOnlyRepository[Task, TaskDTO, int, AsyncSession]): ...
 ```
 
 In a FastAPI route, the same type is the return annotation and the response
@@ -68,8 +70,8 @@ from fastapi import Depends
 
 
 @app.get("/tasks")
-def list_tasks(repo: Annotated[TaskRepository, Depends(get_repo)]) -> list[TaskDTO]:
-    return repo.list_sync(order_by=[Task.created_at.desc(), Task.id])
+async def list_tasks(repo: Annotated[TaskRepository, Depends(get_repo)]) -> list[TaskDTO]:
+    return await repo.list(order_by=[Task.created_at.desc(), Task.id])
 ```
 
 `frozen=True, slots=True` is a good default: immutable, low-overhead, and a clear
@@ -94,12 +96,12 @@ class Workspace(Base):
     name: Mapped[str] = mapped_column(String)
 
 
-class WorkspaceRepository(Repository[Workspace]):   # DTO defaults to Workspace
+class WorkspaceRepository(ReadOnlyRepository[Workspace, Workspace, int, AsyncSession]):
     pass
 
 
-repo.get_sync(1)                 # Workspace | None
-repo.list_sync(name="Acme")      # list[Workspace]
+await repo.get(1)                # Workspace | None
+await repo.list(name="Acme")     # list[Workspace]
 ```
 
 This is the lightest path in CPU terms, since nothing is copied. The trade-off is
@@ -126,9 +128,9 @@ class TaskOut(BaseModel):
     status: str
 
 
-class TaskRepository(Repository[Task, TaskOut]): ...
+class TaskRepository(ReadOnlyRepository[Task, TaskOut, int, AsyncSession]): ...
 
-repo.list_sync()   # list[TaskOut], ready to return over HTTP
+await repo.list()  # list[TaskOut], ready to return over HTTP
 ```
 
 The `from_attributes=True` config is what lets Pydantic read straight off the

@@ -91,10 +91,10 @@ this page.
         assignee_id: int | None | UnsetType = UNSET
     ```
 
-The examples below use a synchronous `Session`. For `AsyncSession`, bind the
-repository to `AsyncSession`, make hooks `async def` when they perform database
-I/O, and await the relevant session call. The [async and sync guide](async.md)
-covers session lifetime and relationship loading.
+Keep a hook as a normal function when it only transforms values. Make it
+`async def` when it performs database I/O; the repository awaits it before the
+next lifecycle step. [Sessions and execution](async.md) covers relationship
+loading and session lifetime.
 
 ```python hl_lines="6 8-9"
 from datetime import UTC, datetime
@@ -295,7 +295,7 @@ class TaskRefRepository(Repository[Task, str]):
         return model.title
 
 
-repo.get_sync(task_id)   # str | None, not a Task
+await repo.get(task_id)  # str | None, not a Task
 ```
 
 Unlike `before` and `after`, which chain, `build` has a single winner: the

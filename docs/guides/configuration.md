@@ -211,7 +211,7 @@ does not rename create or update payload fields.
 
 - **Reading (hydration).** When a row becomes a `TaskDTO`, the column `created_at`
   is read into the field `opened_at`.
-- **Projecting.** When you do `repo[TaskCard].list_sync()` and `TaskCard` has an
+- **Projecting.** When you do `await repo[TaskCard].list()` and `TaskCard` has an
   `opened_at` field, repositron resolves it back to the `created_at` column to
   build the `SELECT`. See [projection](projection.md).
 - **Writing.** Create and update payloads always use model attribute names. A
@@ -269,8 +269,8 @@ class TaskRepository(Repository[Task, TaskDTO]):
     field_mapping = {"created_at": "opened_at"}
     ORDER = [Task.created_at.desc(), Task.id]
 
-repo.list_sync(order_by=repo.ORDER)
-repo.list_paginated_sync(0, 20, order_by=repo.ORDER)
+await repo.list(order_by=repo.ORDER)
+await repo.list_paginated(0, 20, order_by=repo.ORDER)
 ```
 
 `ORDER` is not special to repositron, it is just an attribute you define and pass

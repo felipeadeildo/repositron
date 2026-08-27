@@ -42,7 +42,7 @@ is a valid read/write repository returning `Workspace` with an `int` key, and yo
 add the other parameters only as you need them. `SessionT` is either
 `sqlalchemy.orm.Session`, `sqlalchemy.ext.asyncio.AsyncSession`, or SQLAlchemy's
 `async_scoped_session`. See
-[primary keys](guides/primary-keys.md) and [async and sync](guides/async.md).
+[primary keys](guides/primary-keys.md) and [sessions and execution](guides/async.md).
 
 ## Class attributes
 

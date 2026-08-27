@@ -25,6 +25,7 @@ take an `int`, and `create` returns one:
 
     from dataclasses import dataclass
 
+    from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
     from repositron import ReadOnlyRepository, Repository, UNSET, UnsetType
@@ -61,15 +62,17 @@ take an `int`, and `create` returns one:
         status: str | UnsetType = UNSET
 
 
-    class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]): ...
+    class TaskRepository(
+        Repository[Task, TaskDTO, TaskCreate, TaskUpdate, int, AsyncSession]
+    ): ...
     ```
 
 ```python
 repo = TaskRepository(session)
 
-repo.get_sync(1)          # TaskDTO | None
-repo.exists_sync(1)       # bool
-repo.get_sync("1")        # type error: expected int, got str
+await repo.get(1)         # TaskDTO | None
+await repo.exists(1)      # bool
+await repo.get("1")       # type error: expected int, got str
 ```
 
 That last line is the point: because the key type is part of the repository's
@@ -101,12 +104,12 @@ class PageDTO:
     html: str
 
 
-class PageRepository(ReadOnlyRepository[Page, PageDTO, str]):
+class PageRepository(ReadOnlyRepository[Page, PageDTO, str, AsyncSession]):
     pk_column = "url_hash"
 
 
-repo.get_sync("a1b2c3")   # PageDTO | None
-repo.get_sync(123)        # type error: expected str, got int
+await repo.get("a1b2c3")  # PageDTO | None
+await repo.get(123)       # type error: expected str, got int
 ```
 
 A `uuid` key on a full-CRUD repository is no different, name `uuid.UUID` as the
@@ -142,13 +145,13 @@ class ApiTokenUpdate:
 
 
 class ApiTokenRepository(
-    Repository[ApiToken, ApiTokenDTO, ApiTokenCreate, ApiTokenUpdate, uuid.UUID]
+    Repository[ApiToken, ApiTokenDTO, ApiTokenCreate, ApiTokenUpdate, uuid.UUID, AsyncSession]
 ):
     pk_column = "token_id"
 
 
-tid = repo.create_sync(ApiTokenCreate(workspace_id=1, label="ci"))   # uuid.UUID
-repo.get_sync(tid)                                                   # ApiTokenDTO | None
+tid = await repo.create(ApiTokenCreate(workspace_id=1, label="ci"))  # uuid.UUID
+await repo.get(tid)                                                  # ApiTokenDTO | None
 ```
 
 !!! note "Why the type is declared and not inferred"
@@ -162,15 +165,15 @@ repo.get_sync(tid)                                                   # ApiTokenD
 ### The slots are positional
 
 Type parameters cannot be passed by name, so to reach `PKT` you fill the ones
-before it. `SessionT` follows `PKT` when the repository is asynchronous. If a
-CRUD repository has real `Create`/`Update` payloads, declare them, that is the
-honest signature anyway:
+before it. `SessionT` is the final slot. If a CRUD repository has real
+`Create`/`Update` payloads, declare them; that is the honest signature anyway:
 
 ```python
 Repository[ApiToken, ApiTokenDTO, ApiTokenCreate, ApiTokenUpdate, uuid.UUID]
 ```
 
-For the async version, add `AsyncSession` in the final slot:
+The examples in this guide bind that final slot to `AsyncSession`, which makes
+the inherited calls awaitable:
 
 ```python
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -189,9 +192,11 @@ class AsyncApiTokenRepository(
     pk_column = "token_id"
 ```
 
-Padding the payload slots with `object` only makes sense when you genuinely
-don't use `create`/`update`. An append-only `AuditEntry` is written once and
-never updated, so it has no update payload and the slot is padded:
+For a synchronous repository, bind the same final slot to `Session` and use the
+explicit `_sync` methods. Padding the payload slots with `object` only makes
+sense when you genuinely don't use `create`/`update`. An append-only
+`AuditEntry` is written once and never updated, so it has no update payload and
+the slot is padded:
 
 ```python
 class AuditEntry(Base):
@@ -244,8 +249,8 @@ model on first use, so a column from the wrong model (or a bad name) raises
 prefer, they resolve to the same column. Both feed every id-based method:
 
 ```python
-repo.get_sync("a1b2c3")     # WHERE url_hash = 'a1b2c3'
-repo.exists_sync("a1b2c3")  # same column
+await repo.get("a1b2c3")    # WHERE url_hash = 'a1b2c3'
+await repo.exists("a1b2c3") # same column
 ```
 
 This is the case for tables keyed by a natural identifier, a hash, a slug, an
@@ -258,10 +263,10 @@ ordinary attribute, so you can filter on it through the normal channels when you
 want a query rather than a single fetch:
 
 ```python
-repo.get_sync("a1b2c3")     # one PageDTO | None, keyed lookup
+await repo.get("a1b2c3")    # one PageDTO | None, keyed lookup
 
 hashes = ["a1b2c3", "d4e5f6", "789abc"]
-repo.list_sync(extra_filters=[Page.url_hash.in_(hashes)])   # list[PageDTO]
+await repo.list(extra_filters=[Page.url_hash.in_(hashes)])  # list[PageDTO]
 ```
 
 That returns a list, where `get` returns one. Reach for whichever matches what

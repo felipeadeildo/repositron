@@ -1,0 +1,36 @@
+# repositron documentation
+
+repositron is a typed generic repository base for SQLAlchemy 2.0. Its primary
+API is asyncio: bind `Repository` to `AsyncSession` and await unsuffixed
+methods. The `*_sync` methods are the separate synchronous counterpart.
+
+## Start here
+
+- [Get started with asyncio](https://repositron.fa.dev.br/get-started/): install, session lifecycle, a
+  complete repository declaration, and CRUD calls.
+- [Sessions and execution](https://repositron.fa.dev.br/guides/async/): `AsyncSession`
+  lifecycle, relationship loading, hooks, scoped sessions, and sync mapping.
+- [Concepts](https://repositron.fa.dev.br/concepts/): the model / DTO / payload vocabulary.
+
+## Guides
+
+- [Configuration](https://repositron.fa.dev.br/guides/configuration/): generic parameters, field mapping,
+  primary-key configuration, and behavior options.
+- [Filtering](https://repositron.fa.dev.br/guides/filtering/): keyword filters, SQLAlchemy expressions,
+  `None`, `UNSET`, and ordering.
+- [Updating rows](https://repositron.fa.dev.br/guides/updates/): `UNSET`, `NULL`, transactions, and error
+  rollback.
+- [Bulk writes](https://repositron.fa.dev.br/guides/bulk/): `bulk_create`, `update_where`, and
+  `delete_where`.
+- [Pagination](https://repositron.fa.dev.br/guides/pagination/): stable ordering and `PaginatedResult`.
+- [Projection](https://repositron.fa.dev.br/guides/projection/): `repo[Shape]` and selected columns.
+- [Return types](https://repositron.fa.dev.br/guides/return-types/): dataclass, model, and Pydantic DTOs.
+- [Hooks](https://repositron.fa.dev.br/guides/hooks/): `@on` hooks and async hydration.
+- [Custom queries](https://repositron.fa.dev.br/guides/custom-queries/): domain queries and `@writes`.
+- [Primary keys](https://repositron.fa.dev.br/guides/primary-keys/): non-integer keys and custom key
+  columns.
+
+## Reference
+
+- [API reference](https://repositron.fa.dev.br/reference/): public classes, method signatures, and
+  lifecycle guarantees.

@@ -31,6 +31,8 @@
     &middot;
     <a href="https://repositron.fa.dev.br/guides/hooks/"><strong>Hooks</strong></a>
     &middot;
+    <a href="https://repositron.fa.dev.br/guides/async/"><strong>Sessions</strong></a>
+    &middot;
     <a href="https://repositron.fa.dev.br/reference/"><strong>API</strong></a>
 </p>
 
@@ -48,6 +50,9 @@ every method checked against the types you declared.
 
 ```python
 from dataclasses import dataclass
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from repositron import Repository, UNSET, UnsetType
 
 
@@ -72,7 +77,9 @@ class TaskUpdate:
     assignee_id: int | None | UnsetType = UNSET   # None = unassign (SET NULL)
 
 
-class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
+class TaskRepository(
+    Repository[Task, TaskDTO, TaskCreate, TaskUpdate, int, AsyncSession]
+):
     pass                                       # the whole repository
 ```
 
@@ -81,19 +88,21 @@ That is the whole repository. `get` / `first` / `list` / `list_paginated` /
 against `TaskDTO`:
 
 ```python
-repo = TaskRepository(session)  # a synchronous SQLAlchemy Session
+async def use_tasks(session: AsyncSession) -> None:
+    repo = TaskRepository(session)
 
-repo.get_sync(1)                                         # -> TaskDTO | None
-repo.list_sync(workspace_id=42, status="open", order_by=Task.created_at.desc())
-repo.list_paginated_sync(0, 20, order_by=Task.created_at.desc())
-repo.create_sync(TaskCreate(workspace_id=42, title="Ship the docs"))  # -> int (new id)
-repo.update_sync(1, TaskUpdate(status="done"))          # only status; title untouched
+    task = await repo.get(1)  # TaskDTO | None
+    tasks = await repo.list(workspace_id=42, status="open", order_by=Task.created_at.desc())
+    page = await repo.list_paginated(0, 20, order_by=Task.created_at.desc())
+    task_id = await repo.create(TaskCreate(workspace_id=42, title="Ship the docs"))
+    updated = await repo.update(task_id, TaskUpdate(status="done"))
 ```
 
-For FastAPI or another async application, bind the same base to `AsyncSession`
-and await the unsuffixed methods: `await repo.get(id)`, `await repo.list(...)`,
-and `await repo.create(payload)`. The full [async and sync guide](https://repositron.fa.dev.br/guides/async/)
-shows both session types, hooks, custom writes, and the migration mapping.
+This is the default path for FastAPI and any asyncio application. The
+[async guide](https://repositron.fa.dev.br/guides/async/) covers session
+lifetime, relationship loading, hooks, and custom writes. For a conventional
+script or worker, bind the same base to `Session` and call `get_sync`,
+`list_sync`, and the other explicit sync methods.
 
 ## Why repositron
 
@@ -108,7 +117,7 @@ means `IS NULL`; `UNSET` skips the filter, so optional query params pass straigh
 through without branching.
 
 ```python
-repo.list_sync(workspace_id=42, extra_filters=[Task.archived_at.is_(None)], order_by=Task.id)
+await repo.list(workspace_id=42, extra_filters=[Task.archived_at.is_(None)], order_by=Task.id)
 # WHERE workspace_id = 42 AND archived_at IS NULL ORDER BY id  (open, non-archived)
 ```
 
@@ -128,7 +137,7 @@ class TaskCard:
     title: str
     status: str
 
-repo[TaskCard].list_sync(workspace_id=42, status="open")
+await repo[TaskCard].list(workspace_id=42, status="open")
 # SELECT tasks.id, tasks.title, tasks.status FROM tasks
 #   WHERE workspace_id = 42 AND status = 'open'
 #   -> list[TaskCard]   (only those three columns ever leave the database)
@@ -147,10 +156,11 @@ model itself, or a Pydantic schema you already have.
 ## Install
 
 ```bash
-uv add repositron        # or: pip install repositron
+uv add "repositron[asyncio]"        # or: pip install "repositron[asyncio]"
 ```
 
-Requires Python 3.13+ and `sqlalchemy>=2.0`, the only dependency.
+Requires Python 3.13+ and `sqlalchemy>=2.0`. The asyncio extra installs
+SQLAlchemy's async support; Pydantic remains optional.
 
 ## Documentation
 

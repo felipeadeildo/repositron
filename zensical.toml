@@ -55,6 +55,7 @@ nav = [
   ] },
   { "Guides" = [
     "guides/index.md",
+    { "Sessions and execution" = "guides/async.md" },
     { "Configuration" = "guides/configuration.md" },
     { "Filtering" = "guides/filtering.md" },
     { "Updating rows" = "guides/updates.md" },

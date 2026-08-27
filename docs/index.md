@@ -13,7 +13,14 @@ Full CRUD, with <strong>zero per-table boilerplate</strong>.
 </p>
 
 [Get started](get-started.md){ .md-button .md-button--primary }
-[Guides](guides/index.md){ .md-button }
+[Sessions and execution](guides/async.md){ .md-button }
+[All guides](guides/index.md){ .md-button }
+
+??? info "For agents and documentation tools"
+
+    Start with the machine-readable [documentation index](llms.txt). It maps
+    implementation questions to the smallest relevant guide and states the
+    awaited calling convention.
 
 ---
 
@@ -26,32 +33,33 @@ generically, and types it against your model and your return shape.
 
     ```python
     from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
     class TaskRepository:
-        def __init__(self, session: Session) -> None:
+        def __init__(self, session: AsyncSession) -> None:
             self.session = session
 
-        def get(self, id: int) -> TaskDTO | None:
-            row = self.session.scalars(select(Task).where(Task.id == id)).first()
+        async def get(self, id: int) -> TaskDTO | None:
+            row = (await self.session.scalars(select(Task).where(Task.id == id))).first()
             if row is None:
                 return None
             return TaskDTO(id=row.id, title=row.title, status=row.status, assignee_id=row.assignee_id)
 
-        def list(self, *, status: str | None = None) -> list[TaskDTO]:
+        async def list(self, *, status: str | None = None) -> list[TaskDTO]:
             stmt = select(Task)
             if status is not None:
                 stmt = stmt.where(Task.status == status)
-            rows = self.session.scalars(stmt).all()
+            rows = (await self.session.scalars(stmt)).all()
             return [TaskDTO(id=r.id, title=r.title, status=r.status, assignee_id=r.assignee_id) for r in rows]
 
-        def update(self, id: int, *, assignee_id: int | None = None) -> bool:
-            task = self.session.scalars(select(Task).where(Task.id == id)).first()
+        async def update(self, id: int, *, assignee_id: int | None = None) -> bool:
+            task = (await self.session.scalars(select(Task).where(Task.id == id))).first()
             if task is None:
                 return False
             if assignee_id is not None:   # and how do you unassign on purpose?
                 task.assignee_id = assignee_id
-            self.session.flush()
+            await self.session.flush()
             return True
 
         # ...count, delete, first, pagination, then again for the next ten tables.
@@ -61,6 +69,7 @@ generically, and types it against your model and your return shape.
 
     ```python
     from dataclasses import dataclass
+    from sqlalchemy.ext.asyncio import AsyncSession
     from repositron import Repository, UNSET, UnsetType
 
 
@@ -85,7 +94,9 @@ generically, and types it against your model and your return shape.
         assignee_id: int | None | UnsetType = UNSET
 
 
-    class TaskRepository(Repository[Task, TaskDTO, TaskCreate, TaskUpdate]):
+    class TaskRepository(
+        Repository[Task, TaskDTO, TaskCreate, TaskUpdate, int, AsyncSession]
+    ):
         ...
     ```
 
@@ -100,7 +111,7 @@ generically, and types it against your model and your return shape.
 
     ---
 
-    `repo.list_sync()` is `list[TaskDTO]`, and your editor knows it. No casts, no
+    `await repo.list()` is `list[TaskDTO]`, and your editor knows it. No casts, no
     `Any`. The return value is the same object your API serializes.
 
 -   :material-filter-variant:{ .lg .middle } __Two ways to filter, one call__
@@ -125,7 +136,7 @@ generically, and types it against your model and your return shape.
 
     ---
 
-    `repo[Card].list_sync()` selects just that shape's columns, for one call, without
+    `await repo[Card].list()` selects just that shape's columns, for one call, without
     touching the injected repository.
 
     [:octicons-arrow-right-24: Projection](guides/projection.md)

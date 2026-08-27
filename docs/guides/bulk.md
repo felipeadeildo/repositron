@@ -19,6 +19,7 @@ and can use SQLAlchemy's insert batching when the dialect supports it.
     ```python
     from dataclasses import dataclass
 
+    from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
     from repositron import UNSET, UnsetType, Repository
 
@@ -43,7 +44,7 @@ and can use SQLAlchemy's insert batching when the dialect supports it.
         assignee_id: int | None | UnsetType = UNSET
 
 
-    class TaskRepository(Repository[Task, Task, TaskCreate]): ...
+    class TaskRepository(Repository[Task, Task, TaskCreate, object, int, AsyncSession]): ...
 
 
     repo = TaskRepository(session)
@@ -57,7 +58,7 @@ does not promise one `INSERT` statement; the dialect and SQLAlchemy choose how
 to send the batch:
 
 ```python
-ids = repo.bulk_create_sync([
+ids = await repo.bulk_create([
     TaskCreate(workspace_id=1, title="Write the spec"),
     TaskCreate(workspace_id=1, title="Review the spec"),
     TaskCreate(workspace_id=1, title="Ship the spec"),
@@ -81,35 +82,40 @@ return the number of rows the statement touched:
 
 ```python
 # Archive every done task in a workspace.
-n = repo.update_where_sync(
+n = await repo.update_where(
     Task.workspace_id == 1,
     Task.status == "done",
     status="archived",
 )   # n == rows updated
 
 # Reassign a whole workspace to one owner.
-repo.update_where_sync(Task.workspace_id == 1, assignee_id=7)
+await repo.update_where(Task.workspace_id == 1, assignee_id=7)
 
 # Drop every task assigned to a member who left.
-removed = repo.delete_where_sync(Task.assignee_id == 42)
+removed = await repo.delete_where(Task.assignee_id == 42)
 ```
 
-Because they speak in filters and values rather than instances, the keyword
-arguments to `update_where` are the `SET` clause, not a `WHERE`. The row selection
-is the positional part:
+Because they speak in filters and values rather than instances, positional
+arguments select rows and keyword arguments set column values:
 
-```python
-repo.update_where_sync(Task.status == "open", status="in_progress")
-#                 └── which rows ──┘       └── what to set ──┘
+```python linenums="1" hl_lines="2-3"
+updated = await repo.update_where(
+    Task.status == "open",  # (1)!
+    status="in_progress",  # (2)!
+)
 ```
+
+1. This positional SQLAlchemy expression becomes the `WHERE` clause. It picks
+   the rows to change.
+2. This keyword argument becomes the `SET` clause. It supplies the new value.
 
 `delete_where` has no `SET` clause to claim its keywords, so it accepts the same
 equality `**filters` the read methods do, mixed freely with positional
 expressions:
 
 ```python
-repo.delete_where_sync(status="open")                          # equality shorthand
-repo.delete_where_sync(Task.created_at < cutoff, status="open")  # mix the two forms
+await repo.delete_where(status="open")
+await repo.delete_where(Task.created_at < cutoff, status="open")
 ```
 
 ### The empty-filter guard
@@ -119,8 +125,8 @@ is almost never what a caller meant to type. Both raise `ValueError` rather than
 silently rewriting or emptying the table:
 
 ```python
-repo.update_where_sync(status="archived")   # ValueError: requires at least one filter
-repo.delete_where_sync()                    # ValueError: requires at least one filter
+await repo.update_where(status="archived")  # ValueError: requires at least one filter
+await repo.delete_where()                   # ValueError: requires at least one filter
 ```
 
 To act on the whole table on purpose, say so with a filter that matches it, e.g.
@@ -142,7 +148,7 @@ it skips them by default to keep one ORM flush. When a payload genuinely needs
 its create hooks, opt in with `hooks=True`:
 
 ```python
-ids = repo.bulk_create_sync(payloads, hooks=True)   # ("create", "before") per model, then one flush
+ids = await repo.bulk_create(payloads, hooks=True)
 ```
 
 With `hooks=True`, each `("create", "before")` hook runs before the batch is
@@ -156,8 +162,8 @@ All three flush and leave the commit to you, exactly like the per-row writes. Pa
 [committing](updates.md#transactions) for the full table.
 
 ```python
-repo.bulk_create_sync(payloads, commit=True)
-repo.update_where_sync(Task.status == "done", status="archived", commit=True)
+await repo.bulk_create(payloads, commit=True)
+await repo.update_where(Task.status == "done", status="archived", commit=True)
 ```
 
 ## When not to use these

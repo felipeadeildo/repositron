@@ -12,12 +12,13 @@ Python, but it is worth pinning down what each means so the rest reads cleanly.
 
 A **repository** is the one object that knows how to read and write a given kind
 of record. Instead of scattering `select(Task)...` across your routes, services,
-and scripts, you put that logic behind a `TaskRepository` and call `repo.get_sync(1)`
-or `repo.list_sync(status="open")`. The rest of your code asks for what it wants and
-never touches the database directly.
+and scripts, you put that logic behind a `TaskRepository` and call `await
+repo.get(1)` or `await repo.list(status="open")`. The rest of your code asks for
+what it wants and never touches the database directly.
 
 The point is a seam. On one side, your application speaks in domain terms
-(`repo.create_sync(...)`, `repo.list_sync(...)`); on the other, the repository speaks SQL.
+(`await repo.create(...)`, `await repo.list(...)`); on the other, the repository
+speaks SQL.
 You can read the calling code without reading SQL, swap the storage details
 without touching callers, and test against a fake repository. That is the
 **repository pattern**, an old idea, and a good one.
@@ -120,7 +121,7 @@ database ships less and you get back exactly what you asked for. See [projecting
 columns](guides/projection.md).
 
 ```python
-repo[TaskCard].list_sync()   # SELECT id, title, status  ->  list[TaskCard]
+await repo[TaskCard].list()  # SELECT id, title, status  ->  list[TaskCard]
 ```
 
 ---

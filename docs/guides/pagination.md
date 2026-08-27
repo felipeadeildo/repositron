@@ -17,7 +17,8 @@ opinionated here on purpose.
     from datetime import datetime
 
     from sqlalchemy import DateTime, Integer, String
-    from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
     from repositron import Repository
 
@@ -46,11 +47,13 @@ opinionated here on purpose.
         assignee_id: int | None
 
 
-    class TaskRepository(Repository[Task, TaskDTO, "TaskCreate", "TaskUpdate"]):
+    class TaskRepository(
+        Repository[Task, TaskDTO, "TaskCreate", "TaskUpdate", int, AsyncSession]
+    ):
         ORDER = [Task.created_at.desc(), Task.id]
 
 
-    session: Session = ...  # your SQLAlchemy session
+    session: AsyncSession = ...
     repo = TaskRepository(session)
     ```
 
@@ -62,7 +65,7 @@ is what you need to compute how many pages there are, so it comes back in the
 same call rather than forcing a second one.
 
 ```python
-page = repo.list_paginated_sync(offset=0, limit=20, order_by=Task.created_at.desc())
+page = await repo.list_paginated(offset=0, limit=20, order_by=Task.created_at.desc())
 
 page.items   # list[TaskDTO]  -> this page
 page.total   # int            -> all matching rows, ignoring offset/limit
@@ -75,7 +78,7 @@ open tasks in one workspace, newest first:
 ```python
 offset, limit = 0, 20
 
-page = repo.list_paginated_sync(
+page = await repo.list_paginated(
     offset=offset,
     limit=limit,
     workspace_id=42,
@@ -94,8 +97,8 @@ envelope looks like:
 from repositron import PaginatedResult
 
 
-def list_open_tasks(self, workspace_id: int, offset: int, limit: int):
-    result: PaginatedResult[TaskDTO] = self.repo.list_paginated_sync(
+async def list_open_tasks(self, workspace_id: int, offset: int, limit: int):
+    result: PaginatedResult[TaskDTO] = await self.repo.list_paginated(
         offset=offset,
         limit=limit,
         workspace_id=workspace_id,
@@ -123,18 +126,18 @@ from fastapi import Depends, FastAPI
 app = FastAPI()
 
 
-def get_repo(session: Annotated[Session, Depends(get_session)]) -> TaskRepository:
+def get_repo(session: Annotated[AsyncSession, Depends(get_session)]) -> TaskRepository:
     return TaskRepository(session)
 
 
 @app.get("/workspaces/{workspace_id}/tasks")
-def list_tasks(
+async def list_tasks(
     workspace_id: int,
     repo: Annotated[TaskRepository, Depends(get_repo)],
     page: int = 1,
     size: int = 20,
 ):
-    result = repo.list_paginated_sync(
+    result = await repo.list_paginated(
         offset=(page - 1) * size,
         limit=size,
         workspace_id=workspace_id,
@@ -145,7 +148,7 @@ def list_tasks(
 ```
 
 `get_repo` is your dependency-injection provider; `get_session` is whatever yields
-a request-scoped `Session`.
+a request-scoped `AsyncSession`.
 
 ## Why order_by is required
 
@@ -153,8 +156,8 @@ Here is the part that is not optional. `list_paginated` will raise a `ValueError
 if you do not give it an `order_by`:
 
 ```python
-repo.list_paginated_sync(0, 20)                              # ValueError
-repo.list_paginated_sync(0, 20, order_by=Task.created_at)    # fine
+await repo.list_paginated(0, 20)                             # ValueError
+await repo.list_paginated(0, 20, order_by=Task.created_at)   # fine
 ```
 
 This is deliberate. A database is free to return rows in any order when you do
@@ -169,7 +172,7 @@ session. Pick a stable order, ideally one that ends in a unique column like the
 primary key, and the problem cannot occur:
 
 ```python
-repo.list_paginated_sync(0, 20, order_by=[Task.created_at.desc(), Task.id])
+await repo.list_paginated(0, 20, order_by=[Task.created_at.desc(), Task.id])
 ```
 
 ## Pagination plays well with projection
@@ -185,7 +188,7 @@ class TaskCard:
     status: str
 
 
-page = repo[TaskCard].list_paginated_sync(
+page = await repo[TaskCard].list_paginated(
     0, 20, workspace_id=42, status="open", order_by=repo.ORDER
 )
 # SELECT only TaskCard's columns, paginated -> PaginatedResult[TaskCard]

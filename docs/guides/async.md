@@ -2,12 +2,12 @@
 icon: lucide/refresh-cw
 ---
 
-# Async and sync repositories
+# Sessions and execution
 
-`Repository` has one set of query rules for SQLAlchemy `Session` and
-`AsyncSession` or `async_scoped_session`. The session you pass in chooses the
-calling convention. The repository never creates, closes, or shares sessions
-for you.
+The repository adopts the calling convention of the SQLAlchemy session you give
+it. With `AsyncSession` (or `async_scoped_session`), await the normal methods.
+With `Session`, call the explicit `*_sync` counterpart. The repository never
+creates, closes, or shares sessions for you.
 
 Install the asyncio extra when the application needs it:
 
@@ -47,7 +47,7 @@ Dispose an engine created in application or function scope explicitly with
 `await engine.dispose()`. SQLAlchemy cannot reliably clean up async pooled
 connections after the event loop has closed.
 
-## Async endpoints
+## Use repositories in async code
 
 Bind a repository subclass to `AsyncSession` when it is used by an async web
 application. Its normal methods are coroutines. A task-local
@@ -74,31 +74,6 @@ Use `await` for every built-in operation: `get`, `first`, `list`,
 `list_paginated`, `count`, `exists`, `create`, `update`, `delete`,
 `bulk_create`, `update_where`, and `delete_where`. Projection keeps its usual
 shape: `await repo[TaskCard].list(order_by=Task.id)`.
-
-## Sync workers
-
-Pass a normal `Session` to the same base in synchronous code, such as a Celery
-worker. Use the matching `_sync` method.
-
-```python
-from sqlalchemy.orm import Session
-
-
-class TaskRepository(
-    Repository[Task, TaskDTO, TaskCreate, TaskUpdate, int, Session]
-):
-    pass
-
-
-def archive_task(session: Session, task_id: int) -> bool:
-    repo = TaskRepository(session)
-    return repo.update_sync(task_id, TaskUpdate(status="archived"))
-```
-
-The mapping is direct: `get_sync`, `first_sync`, `list_sync`,
-`list_paginated_sync`, `count_sync`, `exists_sync`, `create_sync`,
-`update_sync`, `delete_sync`, `bulk_create_sync`, `update_where_sync`, and
-`delete_where_sync`.
 
 ## Type checking and mistakes
 
@@ -143,12 +118,14 @@ async def handle_job() -> None:
         await scoped.remove()
 ```
 
-## Hooks and custom writes
+## Hooks
 
 Async repository hooks may be ordinary functions or `async def` functions.
 The async operation awaits an awaitable hook result. A synchronous operation
 that encounters one raises `TypeError`, because it cannot safely run that
 coroutine for you.
+
+## Relationships and hydration
 
 Keep synchronous hydration code away from unloaded relationships. SQLAlchemy
 cannot perform lazy loading inside `_hydrate()` on an async session. Load
@@ -218,3 +195,29 @@ attributes can otherwise trigger SQLAlchemy's `MissingGreenlet` error.
 Repositron stays driver-neutral. For PostgreSQL with Psycopg 3, configure an
 SQLAlchemy async engine with the Psycopg dialect in the application, then pass
 the resulting `AsyncSession` to the repository.
+
+## The synchronous counterpart
+
+For a conventional script or worker, bind the same base to `Session` and call
+the explicit `*_sync` methods. It is a separate execution mode: repositron does
+not run coroutines from synchronous code or move blocking work to a thread.
+
+```python
+from sqlalchemy.orm import Session
+
+
+class SyncTaskRepository(
+    Repository[Task, TaskDTO, TaskCreate, TaskUpdate, int, Session]
+):
+    pass
+
+
+def archive_task(session: Session, task_id: int) -> bool:
+    repo = SyncTaskRepository(session)
+    return repo.update_sync(task_id, TaskUpdate(status="archived"))
+```
+
+The method mapping is direct: `get` becomes `get_sync`, `list` becomes
+`list_sync`, and so on for `first`, `list_paginated`, `count`, `exists`,
+`create`, `update`, `delete`, `bulk_create`, `update_where`, and
+`delete_where`.
