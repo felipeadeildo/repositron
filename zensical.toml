@@ -75,6 +75,41 @@ nav = [
   ] },
 ]
 
+# The llmstxt plugin writes /llms.txt, an index of the pages for LLMs, and
+# /llms-full.txt, which holds every page in one file. It also writes a Markdown
+# copy next to each page. It only covers the pages listed in the sections, and
+# writes nothing without them. The lists repeat the nav by hand because a glob
+# sorts the pages alphabetically.
+#
+# Read more: https://zensical.org/docs/compatibility/mkdocs/plugins/#llmstxt
+[project.plugins.llmstxt]
+markdown_description = "A typed, generic repository base for SQLAlchemy 2.0. It provides async CRUD, filtering, pagination, projection and hooks for any mapped table, without code for each table."
+full_output = "llms-full.txt"
+
+[project.plugins.llmstxt.sections]
+"Home" = ["index.md"]
+"Introduction" = ["concepts.md", "get-started.md"]
+"Guides" = [
+  "guides/index.md",
+  "guides/async.md",
+  "guides/configuration.md",
+  "guides/filtering.md",
+  "guides/updates.md",
+  "guides/bulk.md",
+  "guides/pagination.md",
+  "guides/projection.md",
+  "guides/return-types.md",
+  "guides/hooks.md",
+  "guides/custom-queries.md",
+  "guides/primary-keys.md",
+]
+"API reference" = ["reference.md"]
+"Design notes" = [
+  "design-notes/index.md",
+  "design-notes/inspirations.md",
+  "design-notes/typed-keys.md",
+]
+
 # With the "extra_css" option you can add your own CSS styling to customize
 # your Zensical project according to your needs. You can add any number of
 # CSS files.
@@ -143,6 +178,11 @@ features = [
     # dismiss it when they have read the announcement.
     # https://zensical.org/docs/setup/header/#announcement-bar
     "announce.dismiss",
+
+    # Adds a "Copy as Markdown" button to each page the llmstxt plugin
+    # covers. The button copies the Markdown file the plugin writes for
+    # that page.
+    "content.action.copy",
 
     # If you have a repository configured and turn on this feature, Zensical
     # will generate an edit button for the page. This works for common
